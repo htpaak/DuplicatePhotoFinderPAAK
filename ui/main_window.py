@@ -10,10 +10,11 @@ from PyQt5.QtWidgets import (
 )
 # from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QIcon # QIcon 제거
 from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent
-from PyQt5.QtCore import Qt, QModelIndex, QSize # QSize 추가
-from image_processor import find_duplicates # image_processor 임포트
+from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot # QThread, pyqtSlot 추가
+from image_processor import ScanWorker # ScanWorker 임포트
 from typing import Optional, Dict, Any # Dict, Any 임포트
 # import send2trash # send2trash 다시 임포트
+from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
 
 # 스타일시트 정의
 QSS = """
@@ -138,12 +139,10 @@ class ImageLabel(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        # self.action_history = collections.deque(maxlen=10) # 제거
-        # __init__ 내부에서 UndoManager 임포트
-        from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
-
         self.undo_manager = UndoManager(self)
-        # self._setup_custom_trash() # 제거
+        self.scan_thread: Optional[QThread] = None
+        self.scan_worker: Optional[ScanWorker] = None
+        self.total_files_to_scan = 0 # 총 스캔할 파일 수 저장 변수
 
         self.setWindowTitle("Duplicate Image Finder")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
@@ -203,13 +202,13 @@ class MainWindow(QMainWindow):
 
         # 스캔 버튼, Undo 버튼 및 상태 표시줄 영역
         scan_status_layout = QHBoxLayout()
-        scan_folder_button = QPushButton("Scan Folder")
+        self.scan_folder_button = QPushButton("Scan Folder") # 버튼 참조 저장
         self.status_label = QLabel("Files scanned: 0 Duplicates found: 0")
         self.undo_button = QPushButton("Undo")
         self.undo_button.setEnabled(self.undo_manager.can_undo())
-        scan_status_layout.addWidget(scan_folder_button)
+        scan_status_layout.addWidget(self.scan_folder_button)
         scan_status_layout.addWidget(self.status_label, 1)
-        scan_status_layout.addWidget(self.undo_button) # 레이아웃에 Undo 버튼 추가
+        scan_status_layout.addWidget(self.undo_button)
         duplicate_list_layout.addLayout(scan_status_layout)
 
         # 중복 목록 테이블 뷰
@@ -241,7 +240,7 @@ class MainWindow(QMainWindow):
         # --- 시그널 연결 ---
         self.left_browse_button.clicked.connect(self.browse_left_image)
         self.right_browse_button.clicked.connect(self.browse_right_image)
-        scan_folder_button.clicked.connect(self.scan_folder)
+        self.scan_folder_button.clicked.connect(self.scan_folder) # scan_folder_button 참조 사용
         self.duplicate_table_view.clicked.connect(self.on_table_item_clicked)
         # 삭제 버튼 시그널 연결 (대상 이미지 지정)
         self.left_delete_button.clicked.connect(lambda: self.delete_selected_image('original'))
@@ -312,42 +311,108 @@ class MainWindow(QMainWindow):
             self._update_image_info(self.right_image_label, self.right_info_label, file_path)
 
     def scan_folder(self):
-        """'Scan Folder' 버튼 클릭 시 폴더를 선택하고 중복 검사를 수행합니다."""
+        """폴더를 선택하고 백그라운드 스레드에서 중복 검사를 시작합니다."""
+        if self.scan_thread and self.scan_thread.isRunning():
+            QMessageBox.warning(self, "Scan in Progress", "A scan is already running.")
+            return
+
         folder_path = QFileDialog.getExistingDirectory(self, "Select Folder to Scan")
         if folder_path:
-            QApplication.setOverrideCursor(Qt.WaitCursor) # 작업 중 커서 변경
-            self.status_label.setText(f"Scanning folder: {folder_path}...")
-            QApplication.processEvents() # UI 업데이트 강제
+            # self.scan_folder_button.setEnabled(False) # 시작 시 비활성화
+            # self.status_label.setText(f"Scanning folder: {folder_path}...") # 시작 메시지는 handle_scan_started에서 설정
+            # QApplication.processEvents()
 
-            try:
-                scanned_count, duplicates = find_duplicates(folder_path)
-                self.status_label.setText(f"Files scanned: {scanned_count} Duplicates found: {len(duplicates)}")
+            # 스레드 및 워커 생성
+            self.scan_thread = QThread()
+            self.scan_worker = ScanWorker(folder_path)
+            self.scan_worker.moveToThread(self.scan_thread)
 
-                # 테이블 모델 초기화 및 데이터 채우기
-                self.duplicate_table_model.removeRows(0, self.duplicate_table_model.rowCount())
-                for original, duplicate, similarity in duplicates:
-                    item_original = QStandardItem(original)
-                    item_duplicate = QStandardItem(duplicate)
-                    item_similarity = QStandardItem(str(similarity))
-                    item_similarity.setTextAlignment(Qt.AlignCenter) # 유사도 가운데 정렬
-                    self.duplicate_table_model.appendRow([item_original, item_duplicate, item_similarity])
+            # 시그널 연결
+            self.scan_thread.started.connect(self.scan_worker.run_scan)
+            self.scan_worker.scan_started.connect(self.handle_scan_started) # scan_started 시그널 연결
+            self.scan_worker.progress_updated.connect(self.update_scan_progress)
+            self.scan_worker.scan_finished.connect(self.handle_scan_finished)
+            self.scan_worker.error_occurred.connect(self.handle_scan_error)
+            self.scan_worker.scan_finished.connect(self.cleanup_scan_thread)
+            self.scan_worker.error_occurred.connect(self.cleanup_scan_thread)
+            self.scan_thread.finished.connect(self.cleanup_scan_thread)
 
-                # 첫 번째 항목 자동 선택 (결과가 있는 경우)
-                if duplicates:
-                    self.duplicate_table_view.selectRow(0)
-                    self.on_table_item_clicked(self.duplicate_table_model.index(0, 0)) # 첫 행 데이터로 이미지 업데이트
-                else:
-                    # 중복 없을 시 이미지 초기화
-                    self.left_image_label.clear()
-                    self.left_info_label.setText("Image Info")
-                    self.right_image_label.clear()
-                    self.right_info_label.setText("Image Info")
+            # 스레드 시작
+            self.scan_thread.start()
+            self.scan_folder_button.setEnabled(False) # 스레드 시작 후 버튼 비활성화
 
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to scan folder: {e}")
-                self.status_label.setText("Scan failed.")
-            finally:
-                QApplication.restoreOverrideCursor() # 원래 커서로 복구
+    @pyqtSlot(int)
+    def handle_scan_started(self, total_files: int):
+        """스캔 시작 시 호출되어 총 파일 수를 저장하고 상태 메시지를 업데이트합니다."""
+        self.total_files_to_scan = total_files
+        self.status_label.setText(f"Scanning... 0 / {self.total_files_to_scan}")
+        QApplication.processEvents() # 메시지 즉시 업데이트
+
+    @pyqtSlot(int)
+    def update_scan_progress(self, scanned_count: int):
+        """스캔 진행률 업데이트 슬롯"""
+        # 총 파일 수가 0보다 클 때만 진행률 표시
+        if self.total_files_to_scan > 0:
+            self.status_label.setText(f"Scanning... {scanned_count} / {self.total_files_to_scan}")
+        else:
+            # 총 파일 수가 0이면 이전 방식 사용 (거의 발생하지 않음)
+            self.status_label.setText(f"Scanning... Files scanned: {scanned_count}")
+
+    @pyqtSlot(int, int, list)
+    def handle_scan_finished(self, total_files: int, scanned_count: int, duplicates: list):
+        """스캔 완료 처리 슬롯"""
+        self.total_files_to_scan = total_files # 완료 시에도 총 파일 수 업데이트 (혹시 모르니)
+        self.status_label.setText(f"Scan complete. {scanned_count} / {total_files} files scanned. Duplicates found: {len(duplicates)}")
+        # self.scan_folder_button.setEnabled(True) # cleanup_scan_thread에서 처리
+        # 테이블 모델 업데이트
+        self.duplicate_table_model.removeRows(0, self.duplicate_table_model.rowCount())
+        for original, duplicate, similarity in duplicates:
+            item_original = QStandardItem(original)
+            item_duplicate = QStandardItem(duplicate)
+            item_similarity = QStandardItem(str(similarity))
+            item_similarity.setTextAlignment(Qt.AlignCenter)
+            self.duplicate_table_model.appendRow([item_original, item_duplicate, item_similarity])
+
+        if duplicates:
+            self.duplicate_table_view.selectRow(0)
+            self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
+        else:
+            self.left_image_label.clear()
+            self.left_info_label.setText("Image Info")
+            self.right_image_label.clear()
+            self.right_info_label.setText("Image Info")
+
+    @pyqtSlot(str)
+    def handle_scan_error(self, error_message: str):
+        """스캔 오류 처리 슬롯"""
+        QMessageBox.critical(self, "Scan Error", error_message)
+        self.status_label.setText("Scan failed.")
+        # self.scan_folder_button.setEnabled(True) # cleanup_scan_thread에서 처리
+        self.total_files_to_scan = 0 # 오류 시 총 파일 수 초기화
+
+    @pyqtSlot()
+    def cleanup_scan_thread(self):
+        """스캔 스레드 및 워커 객체를 정리합니다."""
+        if self.scan_thread and self.scan_thread.isRunning():
+            self.scan_thread.quit()
+            self.scan_thread.wait() # 스레드가 완전히 종료될 때까지 대기
+
+        # 워커의 stop 메서드 호출 (선택적, 루프 중단용)
+        if self.scan_worker:
+            self.scan_worker.stop()
+
+        # 객체 참조 해제 (메모리 누수 방지)
+        # deleteLater()를 사용하면 이벤트 루프에서 안전하게 삭제
+        if self.scan_worker:
+            self.scan_worker.deleteLater()
+        if self.scan_thread:
+            self.scan_thread.deleteLater()
+
+        self.scan_thread = None
+        self.scan_worker = None
+        print("Scan thread cleaned up.") # 확인용 로그
+        self.scan_folder_button.setEnabled(True) # 버튼 활성화 보장
+        self.total_files_to_scan = 0 # 스레드 정리 시 총 파일 수 초기화
 
     def on_table_item_clicked(self, index: QModelIndex):
         """테이블 뷰의 항목 클릭 시 상단 이미지 패널을 업데이트합니다."""

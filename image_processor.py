@@ -2,65 +2,90 @@ import os
 from PIL import Image
 import imagehash
 from typing import List, Tuple, Dict, Optional
+from PyQt5.QtCore import QObject, pyqtSignal
 
 SUPPORTED_FORMATS = {'.png', '.jpg', '.jpeg', '.bmp', '.gif'}
 
-def find_duplicates(folder_path: str, hash_size: int = 8) -> Tuple[int, List[Tuple[str, str, int]]]:
-    """지정된 폴더에서 중복 이미지를 찾아 리스트로 반환합니다.
+class ScanWorker(QObject):
+    """별도 스레드에서 이미지 스캔 작업을 수행하는 워커"""
+    scan_started = pyqtSignal(int) # 총 스캔할 파일 수 전달
+    progress_updated = pyqtSignal(int) # 스캔한 파일 수 전달
+    scan_finished = pyqtSignal(int, int, list) # 총 파일 수, 스캔 완료 수, 중복 목록 전달
+    error_occurred = pyqtSignal(str) # 오류 메시지 전달
 
-    Args:
-        folder_path: 이미지를 스캔할 폴더 경로.
-        hash_size: 이미지 해시 계산에 사용할 크기 (값이 클수록 정밀하지만 느려짐).
+    def __init__(self, folder_path: str, hash_size: int = 8):
+        super().__init__()
+        self.folder_path = folder_path
+        self.hash_size = hash_size
+        self._is_running = True # 외부에서 중단 요청 가능하도록 플래그 추가 (선택적)
 
-    Returns:
-        Tuple: (스캔한 총 파일 수, 중복 이미지 쌍 리스트 [(원본 경로, 중복 경로, 유사도)])
-               유사도는 해시 간의 해밍 거리(차이 비트 수)이며, 0이 완전 일치입니다.
-    """
-    image_hashes: Dict[str, imagehash.ImageHash] = {}
-    duplicates: List[Tuple[str, str, int]] = []
-    scanned_files = 0
+    def run_scan(self):
+        """이미지 스캔 작업을 실행합니다."""
+        image_hashes: Dict[str, imagehash.ImageHash] = {}
+        duplicates: List[Tuple[str, str, int]] = []
+        scanned_files = 0
+        total_image_files = 0
 
-    try:
-        for filename in os.listdir(folder_path):
-            file_path = os.path.join(folder_path, filename)
-            _, ext = os.path.splitext(filename)
+        try:
+            all_files = os.listdir(self.folder_path)
+            # 스캔 대상 이미지 파일 수 미리 계산
+            image_files_to_scan = [
+                f for f in all_files
+                if os.path.isfile(os.path.join(self.folder_path, f))
+                and os.path.splitext(f)[1].lower() in SUPPORTED_FORMATS
+            ]
+            total_image_files = len(image_files_to_scan)
 
-            if os.path.isfile(file_path) and ext.lower() in SUPPORTED_FORMATS:
+            # 스캔 시작 신호 (총 파일 수 전달)
+            self.scan_started.emit(total_image_files)
+
+            # 실제 스캔은 계산된 목록 사용
+            for i, filename in enumerate(image_files_to_scan):
+                if not self._is_running:
+                    print("Scan cancelled.")
+                    break
+
+                file_path = os.path.join(self.folder_path, filename)
+                # _, ext = os.path.splitext(filename) # 이미 위에서 필터링됨
+
+                # if os.path.isfile(file_path) and ext.lower() in SUPPORTED_FORMATS: # 이미 위에서 필터링됨
                 scanned_files += 1
                 try:
                     img = Image.open(file_path)
-                    # 이미지 로딩 후 바로 닫아 메모리 확보 (필요 시)
-                    # img.verify() # Pillow 이슈로 verify() 후 다시 열어야 할 수 있음
-                    # img = Image.open(file_path)
-                    current_hash = imagehash.phash(img, hash_size=hash_size)
-                    img.close() # 파일 핸들 닫기
+                    current_hash = imagehash.phash(img, hash_size=self.hash_size)
+                    img.close()
 
-                    # 기존 해시들과 비교
                     found_duplicate = False
                     for path, existing_hash in image_hashes.items():
-                        similarity = existing_hash - current_hash # 해밍 거리 계산
-                        # 임계값 설정 (예: 해밍 거리가 5 이하이면 중복으로 간주)
-                        # TODO: 임계값을 사용자가 조절할 수 있도록 개선 가능
+                        similarity = existing_hash - current_hash
                         if similarity <= 5:
-                            duplicates.append((path, file_path, 100 - similarity * 100 // (hash_size**2))) # 유사도 % 변환 (근사치)
+                            duplicates.append((path, file_path, 100 - similarity * 100 // (self.hash_size**2)))
                             found_duplicate = True
-                            # 하나의 원본에 여러 중복이 매칭될 수 있도록 break 제거 가능
                             # break
 
-                    # 새 이미지 해시 추가 (중복이 아닌 경우 또는 모든 비교 후)
-                    # 동일한 해시가 이미 있어도 추가 (다른 원본과 비교 위함)
-                    # TODO: 완전 동일 해시 처리 전략 결정 필요 (덮어쓰기 or 리스트 관리)
-                    if not found_duplicate: # 중복으로 발견되지 않은 경우만 원본 후보로 추가
-                         image_hashes[file_path] = current_hash
+                    if not found_duplicate:
+                            image_hashes[file_path] = current_hash
 
                 except Exception as e:
-                    print(f"Error processing file {file_path}: {e}") # 오류 로그
+                    print(f"Error processing file {file_path}: {e}")
 
-    except FileNotFoundError:
-        print(f"Error: Folder not found - {folder_path}")
-        return 0, []
-    except Exception as e:
-        print(f"An unexpected error occurred: {e}")
-        return 0, []
+                # 진행률 업데이트 (매 파일 처리 후 또는 주기적)
+                # if scanned_files % 5 == 0 or i == total_image_files - 1:
+                self.progress_updated.emit(scanned_files) # 매 파일마다 업데이트
 
-    return scanned_files, duplicates 
+            if self._is_running:
+                # 완료 신호 발생 (총 파일 수, 실제 스캔된 수, 중복 목록)
+                self.scan_finished.emit(total_image_files, scanned_files, duplicates)
+
+        except FileNotFoundError:
+            self.error_occurred.emit(f"Error: Folder not found - {self.folder_path}")
+        except Exception as e:
+            self.error_occurred.emit(f"An unexpected error occurred during scan: {e}")
+
+    def stop(self):
+        """스캔 작업을 중단하도록 요청합니다."""
+        self._is_running = False
+
+# 기존 find_duplicates 함수는 유지하거나 제거 (이제 ScanWorker 사용)
+# def find_duplicates(folder_path: str, hash_size: int = 8) -> Tuple[int, List[Tuple[str, str, int]]]:
+#    ... 
