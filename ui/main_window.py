@@ -1,6 +1,8 @@
 import sys
 import os # os 모듈 임포트
 import shutil # shutil 임포트
+import tempfile # tempfile 임포트
+import collections # collections 임포트
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QListView, QSplitter, QTableView,
@@ -9,8 +11,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent # QResizeEvent 추가
 from PyQt5.QtCore import Qt, QModelIndex, QSize # QSize 추가
 from image_processor import find_duplicates # image_processor 임포트
-from typing import Optional
-import send2trash # send2trash 임포트
+from typing import Optional, Dict, Any # Dict, Any 임포트
 
 class ImageLabel(QLabel):
     """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
@@ -70,6 +71,9 @@ class ImageLabel(QLabel):
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
+        self.action_history = collections.deque(maxlen=10) # 최대 10개 작업 기록
+        self._setup_custom_trash() # 임시 삭제 폴더 설정
+
         self.setWindowTitle("Duplicate Image Finder")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
 
@@ -125,12 +129,15 @@ class MainWindow(QMainWindow):
         duplicate_list_frame.setFrameShape(QFrame.StyledPanel) # 프레임 스타일 추가
         duplicate_list_layout = QVBoxLayout(duplicate_list_frame)
 
-        # 스캔 버튼 및 상태 표시줄 영역
+        # 스캔 버튼, Undo 버튼 및 상태 표시줄 영역
         scan_status_layout = QHBoxLayout()
         scan_folder_button = QPushButton("Scan Folder")
         self.status_label = QLabel("Files scanned: 0 Duplicates found: 0")
+        self.undo_button = QPushButton("Undo") # Undo 버튼 추가
+        self.undo_button.setEnabled(False) # 초기 비활성화
         scan_status_layout.addWidget(scan_folder_button)
-        scan_status_layout.addWidget(self.status_label, 1) # 상태 레이블이 남은 공간 차지
+        scan_status_layout.addWidget(self.status_label, 1)
+        scan_status_layout.addWidget(self.undo_button) # 레이아웃에 Undo 버튼 추가
         duplicate_list_layout.addLayout(scan_status_layout)
 
         # 중복 목록 테이블 뷰
@@ -170,6 +177,7 @@ class MainWindow(QMainWindow):
         # 이동 버튼 시그널 연결 (대상 이미지 지정)
         self.left_move_button.clicked.connect(lambda: self.move_selected_image('original'))
         self.right_move_button.clicked.connect(lambda: self.move_selected_image('duplicate'))
+        self.undo_button.clicked.connect(self.undo_last_action) # Undo 버튼 시그널 연결
 
         self._center_window() # 창 중앙 정렬 메서드 호출
 
@@ -326,35 +334,68 @@ class MainWindow(QMainWindow):
                 self.right_image_label.clear()
                 self.right_info_label.setText("Image Info")
 
+    def _setup_custom_trash(self):
+        """되돌리기를 위한 임시 삭제 폴더를 설정하고 생성합니다."""
+        self.custom_trash_folder = os.path.join(tempfile.gettempdir(), "DuplicateFinderTrash")
+        os.makedirs(self.custom_trash_folder, exist_ok=True)
+        print(f"Using temporary trash folder: {self.custom_trash_folder}") # 확인용 로그
+
     def delete_selected_image(self, target: str):
-        """선택된 원본 또는 중복 이미지를 휴지통으로 보냅니다."""
+        """선택된 이미지를 임시 삭제 폴더로 이동하고 작업을 기록합니다."""
         image_path = self._get_selected_image_path(target)
         if not image_path:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
+
+        # 작업 전 정보 가져오기 (테이블에서)
+        selected_row_data = self._get_selected_row_data()
+        if not selected_row_data:
+             QMessageBox.critical(self, "Error", "Could not retrieve data for the selected row.")
+             return
 
         target_name = "Original" if target == 'original' else "Duplicate"
+        base_filename = os.path.basename(image_path)
+        # 임시 폴더 내 고유 경로 생성 (덮어쓰기 방지 - 간단히 파일명 사용)
+        # TODO: 더 강력한 고유 이름 생성 필요 시 (예: timestamp, UUID)
+        trash_destination_path = os.path.join(self.custom_trash_folder, base_filename)
 
         try:
-            # 경로 정규화 추가
-            normalized_path = os.path.normpath(image_path)
-            # send2trash 에 정규화된 경로 사용
-            send2trash.send2trash(normalized_path)
-            # print(f"{target_name} file sent to trash: {normalized_path}")
+            # 임시 폴더로 이동 (shutil.move 사용)
+            shutil.move(image_path, trash_destination_path)
+
+            action_details = {
+                'type': 'delete',
+                'target': target,
+                'original_path': selected_row_data['original'],
+                'duplicate_path': selected_row_data['duplicate'],
+                'similarity': selected_row_data['similarity'],
+                'moved_from': image_path, # 실제 이동된 파일 경로
+                'moved_to': trash_destination_path # 임시 폴더 내 경로
+            }
+            self.action_history.append(action_details) # 작업 기록 추가
+            self.undo_button.setEnabled(True) # Undo 버튼 활성화
+            # print(f"{target_name} file moved to temp trash: {trash_destination_path}")
             self._remove_selected_row()
         except FileNotFoundError:
-            QMessageBox.critical(self, "Error", f"File not found:\n{image_path}\nIt might have been already deleted or moved.") # 오류 메시지에 원본 경로 표시
+            QMessageBox.critical(self, "Error", f"File not found:\n{image_path}\nIt might have been already deleted or moved.")
             self._remove_selected_row()
         except Exception as e:
-            # 오류 메시지에 정규화 시도 전 경로 포함
-            QMessageBox.critical(self, "Error", f"Failed to send {target_name.lower()} file to trash: {e}\nPath: {image_path}")
+            QMessageBox.critical(self, "Error", f"Failed to move {target_name.lower()} file to temp trash: {e}\nPath: {image_path}")
+            # 실패 시 history 변경 없음, 버튼 상태는 history 기반으로 업데이트됨
+            # 버튼 상태 업데이트는 undo_last_action 후 또는 초기화 시에만 필요할 수 있음
+            pass # 오류 메시지만 표시
 
     def move_selected_image(self, target: str):
-        """선택된 원본 또는 중복 이미지를 다른 폴더로 이동합니다."""
+        """선택된 이미지를 다른 폴더로 이동하고 작업을 기록합니다."""
         image_path = self._get_selected_image_path(target)
         if not image_path:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
+
+        selected_row_data = self._get_selected_row_data()
+        if not selected_row_data:
+             QMessageBox.critical(self, "Error", "Could not retrieve data for the selected row.")
+             return
 
         target_name = "Original" if target == 'original' else "Duplicate"
         destination_folder = QFileDialog.getExistingDirectory(self, f"Select Destination Folder for {target_name} Image")
@@ -374,15 +415,91 @@ class MainWindow(QMainWindow):
                         return
 
                 shutil.move(image_path, destination_path)
+
+                action_details = {
+                    'type': 'move',
+                    'target': target,
+                    'original_path': selected_row_data['original'],
+                    'duplicate_path': selected_row_data['duplicate'],
+                    'similarity': selected_row_data['similarity'],
+                    'moved_from': image_path, # 원래 경로
+                    'moved_to': destination_path # 이동된 최종 경로
+                }
+                self.action_history.append(action_details) # 작업 기록 추가
+                self.undo_button.setEnabled(True) # Undo 버튼 활성화
                 QMessageBox.information(self, "Success", f"{target_name} file moved successfully to:\n{destination_folder}")
                 self._remove_selected_row()
             except FileNotFoundError:
                  QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
-                 self._remove_selected_row()
+                 self.undo_button.setEnabled(False)
             except PermissionError:
                 QMessageBox.critical(self, "Error", f"Permission denied. Cannot move the {target_name.lower()} file.")
+                self.undo_button.setEnabled(False)
             except Exception as e:
                  QMessageBox.critical(self, "Error", f"Failed to move {target_name.lower()} file: {e}")
+                 self.undo_button.setEnabled(False)
+
+    def undo_last_action(self):
+        """마지막 작업을 되돌립니다."""
+        if not self.action_history:
+            QMessageBox.information(self, "Undo", "No action to undo.")
+            return
+
+        # 마지막 작업 가져오기 (pop)
+        action = self.action_history.pop()
+        action_type = action['type']
+        original_file_path = action['moved_from']
+        current_file_path = action['moved_to']
+        target_name = "Original" if action['target'] == 'original' else "Duplicate"
+        operation_desc = "restoring from temp trash" if action_type == 'delete' else "moving back"
+
+        try:
+            print(f"Attempting to undo {action_type}: moving {current_file_path} back to {original_file_path}")
+            shutil.move(current_file_path, original_file_path)
+
+            # 테이블에 항목 다시 삽입
+            item_original = QStandardItem(action['original_path'])
+            item_duplicate = QStandardItem(action['duplicate_path'])
+            item_similarity = QStandardItem(str(action['similarity']))
+            item_similarity.setTextAlignment(Qt.AlignCenter)
+            self.duplicate_table_model.insertRow(0, [item_original, item_duplicate, item_similarity])
+
+            # 상태 레이블 업데이트 (테이블 행 개수 기준)
+            new_row_count = self.duplicate_table_model.rowCount()
+            try:
+                status_text_part = self.status_label.text().split(" Duplicates found:")[0]
+                self.status_label.setText(f"{status_text_part} Duplicates found: {new_row_count}")
+            except IndexError:
+                 self.status_label.setText(f"Duplicates found: {new_row_count}")
+
+            # 첫 번째 행 선택 및 패널 업데이트
+            self.duplicate_table_view.selectRow(0)
+            self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
+
+            QMessageBox.information(self, "Undo Successful", f"{target_name} file successfully restored to:\n{original_file_path}")
+
+        except Exception as e:
+            QMessageBox.critical(self, "Undo Error", f"Failed {operation_desc}: {e}\nFrom: {current_file_path}\nTo: {original_file_path}")
+            # 실패 시 작업을 되돌릴 수 없으므로 history에 다시 넣지 않음
+
+        finally:
+            # Undo 버튼 상태 업데이트 (기록이 남아있는지 확인)
+            self.undo_button.setEnabled(len(self.action_history) > 0)
+
+    def _get_selected_row_data(self) -> Optional[Dict[str, Any]]:
+        """테이블 뷰에서 선택된 행의 데이터를 딕셔너리로 반환합니다."""
+        selected_indexes = self.duplicate_table_view.selectedIndexes()
+        if not selected_indexes:
+            return None
+        row = selected_indexes[0].row()
+        try:
+            original_path = self.duplicate_table_model.item(row, 0).text()
+            duplicate_path = self.duplicate_table_model.item(row, 1).text()
+            similarity = int(self.duplicate_table_model.item(row, 2).text())
+            return {'original': original_path, 'duplicate': duplicate_path, 'similarity': similarity}
+        except Exception as e:
+            print(f"Error getting selected row data: {e}")
+            return None
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
