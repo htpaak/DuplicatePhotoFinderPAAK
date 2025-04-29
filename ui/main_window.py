@@ -294,25 +294,36 @@ class MainWindow(QMainWindow):
         return None
 
     def _remove_selected_row(self):
-        """테이블 뷰에서 선택된 행을 제거하고 양쪽 이미지 패널을 초기화합니다."""
+        """테이블 뷰에서 선택된 행을 제거하고, 다음 행을 선택하여 표시하거나 패널을 초기화합니다."""
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if selected_indexes:
             selected_row = selected_indexes[0].row()
+            current_row_count = self.duplicate_table_model.rowCount()
+
+            # 행 제거
             self.duplicate_table_model.removeRow(selected_row)
+
             # 상태 레이블 업데이트
-            current_duplicates = self.duplicate_table_model.rowCount()
+            new_row_count = self.duplicate_table_model.rowCount()
             try:
                 status_text_part = self.status_label.text().split(" Duplicates found:")[0]
-                self.status_label.setText(f"{status_text_part} Duplicates found: {current_duplicates}")
+                self.status_label.setText(f"{status_text_part} Duplicates found: {new_row_count}")
             except IndexError:
-                 # " Duplicates found:" 텍스트가 없는 경우 대비
-                 self.status_label.setText(f"Duplicates found: {current_duplicates}")
+                 self.status_label.setText(f"Duplicates found: {new_row_count}")
 
-            # 삭제/이동 후 양쪽 이미지 패널 초기화
-            self.left_image_label.clear()
-            self.left_info_label.setText("Image Info")
-            self.right_image_label.clear()
-            self.right_info_label.setText("Image Info")
+            # 남은 행이 있으면 다음 행 선택, 없으면 패널 초기화
+            if new_row_count > 0:
+                # 다음에 선택할 행 인덱스 결정 (현재 인덱스 또는 이전 인덱스)
+                next_row_to_select = min(selected_row, new_row_count - 1)
+                self.duplicate_table_view.selectRow(next_row_to_select)
+                # 선택된 행의 이미지 표시 업데이트 트리거
+                self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
+            else:
+                # 남은 행이 없으면 양쪽 패널 초기화
+                self.left_image_label.clear()
+                self.left_info_label.setText("Image Info")
+                self.right_image_label.clear()
+                self.right_info_label.setText("Image Info")
 
     def delete_selected_image(self, target: str):
         """선택된 원본 또는 중복 이미지를 삭제합니다."""
