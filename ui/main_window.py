@@ -326,29 +326,32 @@ class MainWindow(QMainWindow):
                 self.right_info_label.setText("Image Info")
 
     def delete_selected_image(self, target: str):
-        """선택된 원본 또는 중복 이미지를 삭제합니다."""
+        """선택된 원본 또는 중복 이미지를 확인 없이 바로 삭제합니다."""
         image_path = self._get_selected_image_path(target)
         if not image_path:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
         target_name = "Original" if target == 'original' else "Duplicate"
-        reply = QMessageBox.question(self, f'Confirm Delete {target_name}',
-                                     f"Are you sure you want to delete this {target_name.lower()} file?\n{image_path}",
-                                     QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
+        # 확인 메시지 제거
+        # reply = QMessageBox.question(self, f'Confirm Delete {target_name}',
+        #                              f"Are you sure you want to delete this {target_name.lower()} file?\n{image_path}",
+        #                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
-        if reply == QMessageBox.Yes:
-            try:
-                os.remove(image_path)
-                QMessageBox.information(self, "Success", f"{target_name} file deleted successfully:\n{image_path}")
-                self._remove_selected_row()
-            except FileNotFoundError:
-                QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
-                self._remove_selected_row() # 테이블에서도 제거
-            except PermissionError:
-                QMessageBox.critical(self, "Error", f"Permission denied. Cannot delete the {target_name.lower()} file.")
-            except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete {target_name.lower()} file: {e}")
+        # if reply == QMessageBox.Yes:
+        try:
+            os.remove(image_path)
+            # 삭제 성공 시 간단한 상태 표시 (옵션)
+            # print(f"{target_name} file deleted: {image_path}")
+            # QMessageBox.information(self, "Success", f"{target_name} file deleted successfully:\n{image_path}") # 정보 메시지도 제거 가능
+            self._remove_selected_row()
+        except FileNotFoundError:
+            QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
+            self._remove_selected_row()
+        except PermissionError:
+            QMessageBox.critical(self, "Error", f"Permission denied. Cannot delete the {target_name.lower()} file.")
+        except Exception as e:
+            QMessageBox.critical(self, "Error", f"Failed to delete {target_name.lower()} file: {e}")
 
     def move_selected_image(self, target: str):
         """선택된 원본 또는 중복 이미지를 다른 폴더로 이동합니다."""
