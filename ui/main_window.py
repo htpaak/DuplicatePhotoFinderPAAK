@@ -232,7 +232,7 @@ class MainWindow(QMainWindow):
         self.last_acted_group_id: Optional[str] = None # 마지막으로 액션이 적용된 그룹 ID
         self.previous_selection_index: Optional[int] = None # 액션 전 마지막 선택 인덱스
 
-        self.setWindowTitle("Duplicate Image Finder")
+        self.setWindowTitle("DuplicatePhotoFinderApp")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
         self.setStyleSheet(QSS) # 스타일시트 적용
 
