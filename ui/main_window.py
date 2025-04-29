@@ -338,6 +338,7 @@ class MainWindow(QMainWindow):
         self.undo_button.clicked.connect(self.undo_manager.undo_last_action)
         # UndoManager 시그널 연결 (반드시 임포트 이후)
         self.undo_manager.undo_status_changed.connect(self.update_undo_button_state)
+        self.undo_manager.group_state_restore_needed.connect(self._handle_group_state_restore)
 
         self._center_window() # 창 중앙 정렬 메서드 호출
 
@@ -715,6 +716,52 @@ class MainWindow(QMainWindow):
             self.left_info_label.setText("Image Info")
             self.right_image_label.clear()
             self.right_info_label.setText("Image Info")
+
+    def _handle_group_state_restore(self, action_details: dict):
+        """UndoManager로부터 그룹 상태 복원 요청을 처리합니다."""
+        action_type = action_details.get('type')
+        group_id = action_details.get('group_id')
+
+        if not group_id:
+            print("[Restore Error] Group ID not found in action details.")
+            return
+
+        print(f"[MainWindow] Handling group state restore for group {group_id} (Action: {action_type})")
+
+        # 삭제 또는 이동 취소 시 그룹 데이터 복원
+        if action_type == UndoManager.ACTION_DELETE or action_type == UndoManager.ACTION_MOVE:
+            original_members = action_details.get('member_paths')
+            original_representative = action_details.get('representative_path')
+
+            if original_members is None or original_representative is None:
+                 print(f"[Restore Error] Missing member or representative paths for group {group_id}.")
+                 return
+
+            # 그룹 데이터와 대표 정보 복원
+            self.duplicate_groups_data[group_id] = list(original_members)
+            self.group_representatives[group_id] = original_representative
+            print(f"[MainWindow] Restored group {group_id}: Rep={os.path.basename(original_representative)}, Members={len(original_members)}")
+
+            # 테이블 업데이트
+            self._update_table_for_group(group_id)
+
+            # UI 상태 업데이트 (선택 및 이미지 패널)
+            # 복원된 그룹의 첫 번째 쌍을 선택하도록 시도
+            restored_row_index = -1
+            for row in range(self.duplicate_table_model.rowCount()):
+                 item = self.duplicate_table_model.item(row, 2) # Group ID
+                 if item and item.text() == group_id:
+                      restored_row_index = row
+                      break
+
+            if restored_row_index != -1:
+                 self.duplicate_table_view.selectRow(restored_row_index)
+                 self.on_table_item_clicked(self.duplicate_table_model.index(restored_row_index, 0))
+            else:
+                 # 복원 후 테이블에 해당 그룹 ID 행이 없으면 UI 초기화 (이론상 발생 X)
+                 self._update_ui_after_action() # 일반 업데이트 호출
+        else:
+            print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 (QApplication 생성 전 호출)

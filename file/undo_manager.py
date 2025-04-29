@@ -13,7 +13,7 @@ import platform
 import subprocess
 from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox, QApplication, QTableView, QLabel
-from PyQt5.QtCore import QObject, pyqtSignal, QTimer, Qt
+from PyQt5.QtCore import QObject, pyqtSignal, Qt
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
 from typing import Dict, Any, Optional, List
 import send2trash
@@ -35,6 +35,8 @@ class UndoManager(QObject):
     
     # 작업 실행 취소 가능 상태 변경 시그널
     undo_status_changed = pyqtSignal(bool)
+    # 그룹 상태 복원 필요 시그널 (복원할 액션 정보를 전달)
+    group_state_restore_needed = pyqtSignal(dict)
     
     # 작업 유형 상수
     ACTION_DELETE = "delete"
@@ -184,11 +186,9 @@ class UndoManager(QObject):
              return False, None
 
         if self._restore_from_trash(original_path):
-            # 테이블 복원 로직 변경: _add_to_table 대신 MainWindow의 그룹 업데이트 로직 호출 필요
-            # 임시: 콘솔 로그만 출력하고 MainWindow 업데이트는 외부에서 처리하도록 유도
-            print(f"[UndoManager] File restored: {original_path}. Triggering UI update needed.")
-            # TODO: MainWindow의 그룹 데이터 및 테이블 업데이트 로직 호출 방법 강구
-            # self.main_window._restore_group_ui(delete_action) # 예시
+            # 테이블 복원 로직 변경: MainWindow에서 처리하도록 시그널 발생
+            print(f"[UndoManager] File restored: {original_path}. Triggering group state restore.")
+            self.group_state_restore_needed.emit(delete_action)
             return True, original_path
         else:
             return False, None
@@ -219,9 +219,10 @@ class UndoManager(QObject):
 
         try:
             shutil.move(current_path, original_path)
-            # 테이블 복원 로직 변경 (삭제와 동일)
-            print(f"[UndoManager] Move undone for: {original_path}. Triggering UI update needed.")
-            # TODO: MainWindow의 그룹 데이터 및 테이블 업데이트 로직 호출 방법 강구
+            # 테이블 복원 로직 변경: MainWindow에서 처리하도록 시그널 발생 (추후 필요 시)
+            print(f"[UndoManager] Move undone for: {original_path}. Triggering group state restore.")
+            # TODO: 이동 취소 시에도 그룹 상태 복원 시그널 발생 필요? (move_action 전달)
+            # self.group_state_restore_needed.emit(move_action) # 주석 처리 (이동 로직은 아직 미완성)
             return True, original_path
         except Exception as e:
             self.show_message(f"Failed to undo move: {e}", 'error')
