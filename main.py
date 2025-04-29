@@ -1,9 +1,9 @@
 import sys
 import os
 import ctypes # 추가
-import winshell # 추가
-import pythoncom # 추가 (pywin32 필요)
-from win32com.client import Dispatch # 추가 (pywin32 필요)
+# import winshell # 바로 가기 생성 안 하므로 제거
+# import pythoncom # 바로 가기 생성 안 하므로 제거
+# from win32com.client import Dispatch # 바로 가기 생성 안 하므로 제거
 
 # 프로젝트 루트 경로 계산 (main.py 기준)
 project_root = os.path.dirname(os.path.abspath(__file__))
@@ -17,30 +17,24 @@ from PyQt5.QtGui import QIcon # QIcon 임포트 추가
 from PyQt5.QtCore import Qt
 from ui.main_window import MainWindow
 
-# --- 설정 변수 정의 (ui/main_window.py 에서 이동) ---
-APP_NAME = "DuplicatePhotoFinder"
+# --- 설정 변수 정의 (바로 가기 관련 변수 제거) ---
+# APP_NAME = "DuplicatePhotoFinder" # MYAPPID 에서만 사용
 COMPANY_NAME = "MyCompanyName"
 PRODUCT_NAME = "DuplicatePhotoFinder"
 APP_VERSION = "1.0.0" 
 MYAPPID = f"{COMPANY_NAME}.{PRODUCT_NAME}.{APP_VERSION}"
 
 ICON_PATH = os.path.join(project_root, "assets", "icon.ico")
-# SCRIPT_PATH 는 바로 가기 생성 시 사용될 실제 실행 대상 스크립트 경로
-# 여기서는 main.py 를 실행할 것이므로 main.py 경로 또는 ui/main_window.py 경로 지정 필요
-# 만약 바로 가기가 ui/main_window.py 를 직접 실행하게 하려면 해당 경로 사용
-# SCRIPT_TO_RUN_PATH = os.path.join(project_root, "ui", "main_window.py") 
-# 여기서는 main.py 를 실행하도록 설정 (권장)
-SCRIPT_TO_RUN_PATH = os.path.abspath(__file__) 
-
-PYTHON_EXE_PATH = sys.executable 
-SHORTCUT_NAME = f"{APP_NAME}.lnk" 
-try:
-    DESKTOP_PATH = winshell.desktop() 
-    SHORTCUT_PATH = os.path.join(DESKTOP_PATH, SHORTCUT_NAME) 
-except Exception as e:
-    print(f"Error getting desktop path: {e}")
-    DESKTOP_PATH = None
-    SHORTCUT_PATH = None
+# SCRIPT_TO_RUN_PATH = os.path.abspath(__file__) # 바로 가기에서 사용되던 변수 제거
+# PYTHON_EXE_PATH = sys.executable # 바로 가기에서 사용되던 변수 제거
+# SHORTCUT_NAME = f"{APP_NAME}.lnk" # 바로 가기에서 사용되던 변수 제거
+# try: # 바로 가기 경로 계산 로직 제거
+#     DESKTOP_PATH = winshell.desktop() 
+#     SHORTCUT_PATH = os.path.join(DESKTOP_PATH, SHORTCUT_NAME) 
+# except Exception as e:
+#     print(f"Error getting desktop path: {e}")
+#     DESKTOP_PATH = None
+#     SHORTCUT_PATH = None
 # --- 설정 변수 정의 끝 ---
 
 
@@ -62,31 +56,9 @@ except Exception as e:
 
 setup_logging() # 항상 호출 (내부에서 조건 확인)
 
-# --- 바로 가기 생성 또는 업데이트 ---
-if SHORTCUT_PATH and os.path.exists(project_root): # 작업 디렉토리 project_root 사용
-    try:
-        target_exe = PYTHON_EXE_PATH # 항상 python.exe 사용
-
-        icon_exists = os.path.exists(ICON_PATH)
-
-        with winshell.shortcut(SHORTCUT_PATH) as shortcut:
-            shortcut.path = target_exe
-            # 바로 가기가 실행할 스크립트는 main.py
-            shortcut.arguments = f'"{SCRIPT_TO_RUN_PATH}"' 
-            shortcut.working_directory = project_root # 작업 디렉토리: 프로젝트 루트
-            shortcut.description = f"{PRODUCT_NAME} Application"
-
-            if icon_exists:
-                shortcut.icon_location = (ICON_PATH, 0)
-            else:
-                print(f"Warning: Shortcut icon not found at {ICON_PATH}")
-        
-        print(f"Shortcut created/updated: {SHORTCUT_PATH}")
-
-    except Exception as e:
-        print(f"Error creating or updating shortcut: {e}")
-elif not SHORTCUT_PATH:
-     print("Could not determine shortcut path. Skipping shortcut creation.")
+# --- 바로 가기 생성 로직 제거됨 ---
+# if SHORTCUT_PATH and os.path.exists(project_root): 
+#    ...
 # --- 바로 가기 생성 끝 ---
 
 
