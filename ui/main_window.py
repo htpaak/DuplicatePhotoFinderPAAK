@@ -6,13 +6,79 @@ import collections # collections 임포트
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QListView, QSplitter, QTableView,
-    QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QDesktopWidget 추가
+    QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QStyle 제거
 )
-from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent # QResizeEvent 추가
+# from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QIcon # QIcon 제거
+from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent
 from PyQt5.QtCore import Qt, QModelIndex, QSize # QSize 추가
 from image_processor import find_duplicates # image_processor 임포트
 from typing import Optional, Dict, Any # Dict, Any 임포트
 # import send2trash # send2trash 다시 임포트
+
+# 스타일시트 정의
+QSS = """
+QMainWindow {
+    background-color: #f0f0f0; /* 밝은 회색 배경 */
+}
+
+QFrame {
+    border: 1px solid #d0d0d0; /* 연한 테두리 */
+    border-radius: 5px;
+}
+
+QLabel {
+    font-size: 10pt; /* 기본 폰트 크기 */
+    padding: 5px;
+}
+
+QPushButton {
+    background-color: #e0e0e0; /* 버튼 배경 */
+    border: 1px solid #c0c0c0;
+    padding: 6px 12px;
+    border-radius: 4px;
+    font-size: 10pt;
+}
+
+QPushButton:hover {
+    background-color: #d5d5d5;
+}
+
+QPushButton:pressed {
+    background-color: #c8c8c8;
+}
+
+QPushButton:disabled {
+    background-color: #f5f5f5;
+    color: #a0a0a0;
+}
+
+QTableView {
+    border: 1px solid #d0d0d0;
+    gridline-color: #e0e0e0;
+    font-size: 9pt;
+}
+
+QHeaderView::section {
+    background-color: #e8e8e8;
+    padding: 4px;
+    border: 1px solid #d0d0d0;
+    font-size: 9pt;
+}
+
+QSplitter::handle {
+    background-color: #d0d0d0;
+}
+
+QSplitter::handle:vertical {
+    height: 5px;
+}
+
+ImageLabel {
+    background-color: #ffffff; /* 이미지 영역 흰색 배경 */
+    border: 1px dashed #b0b0b0; /* 점선 테두리 */
+    border-radius: 0px; /* 이미지 레이블은 각지게 */
+}
+"""
 
 class ImageLabel(QLabel):
     """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
@@ -81,6 +147,7 @@ class MainWindow(QMainWindow):
 
         self.setWindowTitle("Duplicate Image Finder")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
+        self.setStyleSheet(QSS) # 스타일시트 적용
 
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -139,7 +206,7 @@ class MainWindow(QMainWindow):
         scan_folder_button = QPushButton("Scan Folder")
         self.status_label = QLabel("Files scanned: 0 Duplicates found: 0")
         self.undo_button = QPushButton("Undo")
-        self.undo_button.setEnabled(self.undo_manager.can_undo()) # 초기 상태 설정
+        self.undo_button.setEnabled(self.undo_manager.can_undo())
         scan_status_layout.addWidget(scan_folder_button)
         scan_status_layout.addWidget(self.status_label, 1)
         scan_status_layout.addWidget(self.undo_button) # 레이아웃에 Undo 버튼 추가
@@ -167,8 +234,8 @@ class MainWindow(QMainWindow):
         splitter = QSplitter(Qt.Vertical)
         splitter.addWidget(image_comparison_frame)
         splitter.addWidget(duplicate_list_frame)
-        # 초기 크기 비율 재조정 (상단 약 488, 하단 약 162 - 상단 비중 증가)
-        splitter.setSizes([488, 162])
+        # 초기 크기 비율 재조정 (상단 약 520, 하단 약 130 - 상단 80%)
+        splitter.setSizes([520, 130])
         main_layout.addWidget(splitter)
 
         # --- 시그널 연결 ---

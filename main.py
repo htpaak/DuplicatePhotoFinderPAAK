@@ -12,6 +12,7 @@ setup_logging() # 항상 호출 (내부에서 조건 확인)
 # 애플리케이션의 메인 로직
 if __name__ == '__main__':
     app = QApplication(sys.argv)
+    app.setStyle('Fusion') # Fusion 스타일 적용
     window = MainWindow()
     window.show()
     sys.exit(app.exec_())
