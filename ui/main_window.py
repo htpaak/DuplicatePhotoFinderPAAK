@@ -10,6 +10,7 @@ from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent
 from PyQt5.QtCore import Qt, QModelIndex, QSize # QSize 추가
 from image_processor import find_duplicates # image_processor 임포트
 from typing import Optional
+import send2trash # send2trash 임포트
 
 class ImageLabel(QLabel):
     """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
@@ -326,32 +327,27 @@ class MainWindow(QMainWindow):
                 self.right_info_label.setText("Image Info")
 
     def delete_selected_image(self, target: str):
-        """선택된 원본 또는 중복 이미지를 확인 없이 바로 삭제합니다."""
+        """선택된 원본 또는 중복 이미지를 휴지통으로 보냅니다."""
         image_path = self._get_selected_image_path(target)
         if not image_path:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
         target_name = "Original" if target == 'original' else "Duplicate"
-        # 확인 메시지 제거
-        # reply = QMessageBox.question(self, f'Confirm Delete {target_name}',
-        #                              f"Are you sure you want to delete this {target_name.lower()} file?\n{image_path}",
-        #                              QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
-        # if reply == QMessageBox.Yes:
         try:
-            os.remove(image_path)
-            # 삭제 성공 시 간단한 상태 표시 (옵션)
-            # print(f"{target_name} file deleted: {image_path}")
-            # QMessageBox.information(self, "Success", f"{target_name} file deleted successfully:\n{image_path}") # 정보 메시지도 제거 가능
+            # 경로 정규화 추가
+            normalized_path = os.path.normpath(image_path)
+            # send2trash 에 정규화된 경로 사용
+            send2trash.send2trash(normalized_path)
+            # print(f"{target_name} file sent to trash: {normalized_path}")
             self._remove_selected_row()
         except FileNotFoundError:
-            QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
+            QMessageBox.critical(self, "Error", f"File not found:\n{image_path}\nIt might have been already deleted or moved.") # 오류 메시지에 원본 경로 표시
             self._remove_selected_row()
-        except PermissionError:
-            QMessageBox.critical(self, "Error", f"Permission denied. Cannot delete the {target_name.lower()} file.")
         except Exception as e:
-            QMessageBox.critical(self, "Error", f"Failed to delete {target_name.lower()} file: {e}")
+            # 오류 메시지에 정규화 시도 전 경로 포함
+            QMessageBox.critical(self, "Error", f"Failed to send {target_name.lower()} file to trash: {e}\nPath: {image_path}")
 
     def move_selected_image(self, target: str):
         """선택된 원본 또는 중복 이미지를 다른 폴더로 이동합니다."""
