@@ -142,14 +142,16 @@ class MainWindow(QMainWindow):
             image_label.setPixmap(pixmap)
             try:
                 file_size_kb = round(os.path.getsize(file_path) / 1024)
-                img_format = os.path.splitext(file_path)[1].upper()[1:] # 확장자 추출 방식 변경
-                info_text = f"{img_format} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB"
+                img_format = os.path.splitext(file_path)[1].upper()[1:]
+                filename = os.path.basename(file_path) # 파일 이름 추출
+                # 정보 텍스트에 파일 이름 추가 (줄바꿈 사용)
+                info_text = f"{img_format} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB\n{filename}"
                 info_label.setText(info_text)
             except FileNotFoundError:
                 info_label.setText("File not found.")
                 image_label.setText("File Not Found")
             except Exception as e:
-                print(f"Error getting file info: {e}") # 디버깅용 로그 추가
+                print(f"Error getting file info: {e}")
                 info_label.setText("Error getting info.")
         else:
             info_label.setText("Cannot load image.")
