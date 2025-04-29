@@ -1,5 +1,11 @@
 import sys
-import os # os 모듈 임포트
+import os
+
+# 프로젝트 루트 경로를 sys.path에 추가
+project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
+if project_root not in sys.path:
+    sys.path.insert(0, project_root)
+
 import shutil # shutil 임포트
 # import tempfile # tempfile 임포트 제거
 import collections # collections 임포트
@@ -8,8 +14,7 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QFrame, QListView, QSplitter, QTableView,
     QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QStyle 제거
 )
-# from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QIcon # QIcon 제거
-from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QImage # QImage 추가
+from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QImage, QIcon # QIcon 추가
 from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot # QThread, pyqtSlot 추가
 from image_processor import ScanWorker, RAW_EXTENSIONS # ScanWorker, RAW_EXTENSIONS 임포트
 from typing import Optional, Dict, Any, List, Tuple # Tuple 임포트 추가
@@ -23,6 +28,20 @@ import rawpy # rawpy 임포트
 import numpy as np # numpy 임포트
 from log_setup import setup_logging # 로깅 설정 임포트
 import uuid # 그룹 ID 생성을 위해 uuid 임포트
+# --- 아래 설정 관련 임포트들은 main.py로 이동 ---
+# import winshell 
+# from win32com.client import Dispatch 
+# import pythoncom 
+# --- 설정 변수 정의 제거 (main.py로 이동) ---
+# APP_NAME = ...
+# COMPANY_NAME = ...
+# ... (ICON_PATH, SCRIPT_PATH, PYTHON_EXE_PATH, SHORTCUT_NAME, SHORTCUT_PATH 등 모두 제거)
+# --- 설정 변수 정의 끝 ---
+
+# --- ICON_PATH 는 MainWindow 에서 직접 사용하므로 필요. main.py 에서 정의된 것을 사용하도록 수정 필요.
+#     -> MainWindow 생성 시 전달하거나, main.py 에서 설정된 전역 변수를 참조하는 방식 고려.
+#     -> 가장 간단하게는 main.py 와 동일한 방식으로 여기서도 계산 (코드 중복 발생)
+ICON_PATH = os.path.join(project_root, "assets", "icon.ico")
 
 # 스타일시트 정의
 QSS = """
@@ -232,7 +251,20 @@ class MainWindow(QMainWindow):
         self.last_acted_group_id: Optional[str] = None # 마지막으로 액션이 적용된 그룹 ID
         self.previous_selection_index: Optional[int] = None # 액션 전 마지막 선택 인덱스
 
+        # --- 초기화 시 경로 로깅 제거 ---
+        # print(f"[MainWindow Init] Current Working Directory: {os.getcwd()}")
+        # print(f"[MainWindow Init] Calculated ICON_PATH: {ICON_PATH}") 
+        # --- 로깅 제거 끝 ---
+
         self.setWindowTitle("DuplicatePhotoFinderApp")
+
+        # --- 아이콘 설정 (계산된 ICON_PATH 사용) ---
+        if os.path.exists(ICON_PATH):
+            self.setWindowIcon(QIcon(ICON_PATH))
+        else:
+             print(f"Warning: Application icon not found at {ICON_PATH}")
+        # --- 아이콘 설정 끝 ---
+
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
         self.setStyleSheet(QSS) # 스타일시트 적용
 
@@ -822,11 +854,17 @@ class MainWindow(QMainWindow):
             print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
 
 if __name__ == '__main__':
-    # DPI 스케일링 활성화 (QApplication 생성 전 호출)
+    # DPI 스케일링 활성화 
     QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
-    setup_logging()
-    app = QApplication(sys.argv)
-    app.setStyle('Fusion')
-    window = MainWindow()
-    window.show()
-    sys.exit(app.exec_()) 
+    
+    setup_logging() # 로깅 설정
+    app = QApplication(sys.argv) # QApplication 생성
+    app.setStyle('Fusion') # 스타일 적용
+    
+    # 애플리케이션 아이콘 설정 (선택적, main.py 에서도 설정됨)
+    if os.path.exists(ICON_PATH):
+        app.setWindowIcon(QIcon(ICON_PATH))
+        
+    window = MainWindow() # 메인 윈도우 생성
+    window.show() # 윈도우 표시
+    sys.exit(app.exec_()) # 이벤트 루프 시작 
