@@ -12,7 +12,7 @@ from PyQt5.QtWidgets import (
 from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QImage # QImage 추가
 from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot # QThread, pyqtSlot 추가
 from image_processor import ScanWorker, RAW_EXTENSIONS # ScanWorker, RAW_EXTENSIONS 임포트
-from typing import Optional, Dict, Any # Dict, Any 임포트
+from typing import Optional, Dict, Any, List, Tuple # Tuple 임포트 추가
 # import send2trash # send2trash 다시 임포트
 from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
 from PIL import Image # Image만 임포트
@@ -22,6 +22,7 @@ from PIL import Image # Image만 임포트
 import rawpy # rawpy 임포트
 import numpy as np # numpy 임포트
 from log_setup import setup_logging # 로깅 설정 임포트
+import uuid # 그룹 ID 생성을 위해 uuid 임포트
 
 # 스타일시트 정의
 QSS = """
@@ -225,6 +226,9 @@ class MainWindow(QMainWindow):
         self.scan_thread: Optional[QThread] = None
         self.scan_worker: Optional[ScanWorker] = None
         self.total_files_to_scan = 0 # 총 스캔할 파일 수 저장 변수
+        # 그룹 데이터를 저장할 변수 추가
+        self.duplicate_groups_data: Dict[str, List[str]] = {} # {group_id: [file_path1, file_path2, ...]}
+        self.group_representatives: Dict[str, str] = {} # {group_id: representative_file_path}
 
         self.setWindowTitle("Duplicate Image Finder")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
@@ -296,18 +300,19 @@ class MainWindow(QMainWindow):
         # 중복 목록 테이블 뷰
         self.duplicate_table_view = QTableView()
         self.duplicate_table_model = QStandardItemModel()
-        self.duplicate_table_model.setHorizontalHeaderLabels(["Original Image", "Duplicate Image", "Similarity (%)"])
+        # 테이블 헤더 변경: Similarity -> Group ID, 열 추가 (Group Member)
+        self.duplicate_table_model.setHorizontalHeaderLabels(["Representative", "Group Member", "Group ID"])
         self.duplicate_table_view.setModel(self.duplicate_table_model)
-        # self.duplicate_table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) # 전체 스트레치 제거
         self.duplicate_table_view.setEditTriggers(QTableView.NoEditTriggers)
         self.duplicate_table_view.setSelectionBehavior(QTableView.SelectRows)
         self.duplicate_table_view.setSelectionMode(QTableView.SingleSelection)
 
-        # 열 너비 개별 설정
+        # 열 너비 조정 (Group ID 숨김)
         header = self.duplicate_table_view.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch) # Original Image 열 늘리기
-        header.setSectionResizeMode(1, QHeaderView.Stretch) # Duplicate Image 열 늘리기
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Similarity 열 내용에 맞게 조정
+        header.setSectionResizeMode(0, QHeaderView.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.Stretch)
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
+        self.duplicate_table_view.setColumnHidden(2, True) # Group ID 열 숨기기
 
         duplicate_list_layout.addWidget(self.duplicate_table_view)
 
@@ -440,28 +445,39 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Scanning... Files processed: {processed_count}")
 
     @pyqtSlot(int, int, list)
-    def handle_scan_finished(self, total_files: int, processed_count: int, duplicates: list):
-        """스캔 완료 처리 슬롯"""
+    def handle_scan_finished(self, total_files: int, processed_count: int, duplicate_groups: List[List[str]]):
+        """스캔 완료 처리 슬롯 (그룹 기반)"""
         self.total_files_to_scan = total_files
-        # "processed" 명시
-        self.status_label.setText(f"Scan complete. {processed_count} / {total_files} files processed. Duplicates found: {len(duplicates)}")
-        # self.scan_folder_button.setEnabled(True) # cleanup_scan_thread에서 처리
+        total_duplicates_count = sum(len(group) -1 for group in duplicate_groups)
+        self.status_label.setText(f"Scan complete. {processed_count} / {total_files} files processed. Duplicates found: {total_duplicates_count} in {len(duplicate_groups)} groups")
 
-        # 테이블 모델 업데이트 전, 유사도(similarity) 기준으로 내림차순 정렬
-        sorted_duplicates = sorted(duplicates, key=lambda item: item[2], reverse=True)
-
-        # 테이블 모델 업데이트
+        # 내부 데이터 초기화
+        self.duplicate_groups_data.clear()
+        self.group_representatives.clear()
         self.duplicate_table_model.removeRows(0, self.duplicate_table_model.rowCount())
-        # 정렬된 목록 사용
-        for original, duplicate, similarity in sorted_duplicates:
-            item_original = QStandardItem(original)
-            item_duplicate = QStandardItem(duplicate)
-            item_similarity = QStandardItem(str(similarity))
-            item_similarity.setTextAlignment(Qt.AlignCenter)
-            self.duplicate_table_model.appendRow([item_original, item_duplicate, item_similarity])
 
-        # if duplicates: # 정렬된 목록 기준으로 변경
-        if sorted_duplicates:
+        # 그룹 데이터를 내부 구조에 저장하고 테이블 모델 채우기
+        for group in duplicate_groups:
+            if not group: continue
+            group_id = str(uuid.uuid4())
+            representative = group[0]
+            self.duplicate_groups_data[group_id] = list(group)
+            self.group_representatives[group_id] = representative
+
+            # 테이블 모델에 행 추가 (대표-멤버 쌍)
+            for member in group:
+                if member == representative:
+                    continue
+                item_representative = QStandardItem(representative)
+                item_member = QStandardItem(member)
+                item_group_id = QStandardItem(group_id)
+                # 읽기 전용 플래그 설정
+                item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
+                item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+                item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
+                self.duplicate_table_model.appendRow([item_representative, item_member, item_group_id])
+
+        if duplicate_groups:
             self.duplicate_table_view.selectRow(0)
             self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
         else:
@@ -508,110 +524,197 @@ class MainWindow(QMainWindow):
             return
 
         row = index.row()
-        original_path_item = self.duplicate_table_model.item(row, 0) # 원본 경로
-        duplicate_path_item = self.duplicate_table_model.item(row, 1) # 중복 경로
+        representative_path_item = self.duplicate_table_model.item(row, 0) # 대표 경로
+        member_path_item = self.duplicate_table_model.item(row, 1) # 멤버 경로
+        group_id_item = self.duplicate_table_model.item(row, 2) # 그룹 ID
 
-        if original_path_item and duplicate_path_item:
-            self._update_image_info(self.left_image_label, self.left_info_label, original_path_item.text())
-            self._update_image_info(self.right_image_label, self.right_info_label, duplicate_path_item.text())
+        if representative_path_item and member_path_item and group_id_item:
+            group_id = group_id_item.text()
+            # 현재 그룹의 대표 이미지 (나중에는 동적으로 바뀔 수 있음)
+            current_representative = self.group_representatives.get(group_id)
+            selected_member = member_path_item.text()
 
-    def _get_selected_image_path(self, target: str) -> Optional[str]:
-        """테이블 뷰에서 선택된 행의 원본 또는 중복 이미지 경로를 반환합니다."""
+            if current_representative:
+                 # 왼쪽: 현재 그룹 대표, 오른쪽: 선택된 멤버
+                 self._update_image_info(self.left_image_label, self.left_info_label, current_representative)
+                 self._update_image_info(self.right_image_label, self.right_info_label, selected_member)
+            else:
+                 print(f"Error: Representative not found for group {group_id}")
+                 # 오류 처리: 패널 초기화 또는 메시지 표시
+                 self.left_image_label.clear()
+                 self.left_info_label.setText("Error: Group data missing")
+                 self.right_image_label.clear()
+                 self.right_info_label.setText("Error: Group data missing")
+
+    def _get_selected_item_data(self, target_label: QLabel) -> Optional[Tuple[str, str]]:
+        """현재 상단 패널에 표시된 이미지 경로와 그룹 ID를 반환합니다."""
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if not selected_indexes:
             return None
         selected_row = selected_indexes[0].row()
 
-        column_index = 0 if target == 'original' else 1 # 0: 원본, 1: 중복
-        image_path_item = self.duplicate_table_model.item(selected_row, column_index)
+        representative_item = self.duplicate_table_model.item(selected_row, 0)
+        member_item = self.duplicate_table_model.item(selected_row, 1)
+        group_id_item = self.duplicate_table_model.item(selected_row, 2)
 
-        if image_path_item:
-            return image_path_item.text()
-        return None
+        if not (representative_item and member_item and group_id_item):
+             return None
 
-    def _remove_selected_row_logic_only(self) -> int:
-        """UI 업데이트 없이 테이블 모델에서 선택된 행만 제거하고 제거된 행 인덱스를 반환합니다."""
-        selected_indexes = self.duplicate_table_view.selectedIndexes()
-        if selected_indexes:
-            selected_row = selected_indexes[0].row()
-            self.duplicate_table_model.removeRow(selected_row)
-            return selected_row # 제거된 행 인덱스 반환
-        return -1 # 선택된 행이 없거나 제거 실패
+        group_id = group_id_item.text()
+        representative_path = representative_item.text()
+        member_path = member_item.text()
 
-    def _update_selection_after_removal(self, removed_row_index: int):
-        """행 제거 후 테이블 선택 및 이미지 패널을 업데이트합니다."""
-        new_row_count = self.duplicate_table_model.rowCount()
-        if new_row_count > 0:
-            # 다음에 선택할 행 인덱스 결정
-            next_row_to_select = min(removed_row_index, new_row_count - 1)
-            if next_row_to_select >= 0: # 유효한 인덱스인지 확인
-                self.duplicate_table_view.selectRow(next_row_to_select)
-                self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
-            else:
-                # 이상 상황: 패널 초기화
-                self.left_image_label.clear()
-                self.left_info_label.setText("Image Info")
-                self.right_image_label.clear()
-                self.right_info_label.setText("Image Info")
+        # 어떤 버튼(왼쪽/오른쪽)이 눌렸는지 판단하여 해당 이미지 경로 반환
+        if target_label is self.left_image_label:
+             # 왼쪽 패널은 항상 현재 그룹 대표를 보여줌
+             current_representative = self.group_representatives.get(group_id)
+             if current_representative: # 대표가 유효하면 반환
+                  return current_representative, group_id
+             else: # 그룹 데이터 오류 시
+                  return None
+        elif target_label is self.right_image_label:
+             # 오른쪽 패널은 테이블에서 선택된 멤버를 보여줌
+             return member_path, group_id
         else:
-            # 남은 행이 없으면 패널 초기화
-            self.left_image_label.clear()
-            self.left_info_label.setText("Image Info")
-            self.right_image_label.clear()
-            self.right_info_label.setText("Image Info")
+            return None # 예상치 못한 경우
 
     def delete_selected_image(self, target: str):
-        """선택된 이미지를 휴지통으로 보내고 UndoManager를 통해 추적합니다."""
-        image_path = self._get_selected_image_path(target)
-        if not image_path:
+        """선택된 이미지를 휴지통으로 보내고 그룹 데이터를 업데이트합니다."""
+        target_label = self.left_image_label if target == 'original' else self.right_image_label
+        selected_data = self._get_selected_item_data(target_label)
+
+        if not selected_data:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
-        # UndoManager의 delete_file 호출
-        if self.undo_manager.delete_file(image_path, target):
-            # 성공 시 테이블 행 제거 및 UI 업데이트
-            removed_index = self._remove_selected_row_logic_only()
-            if removed_index != -1:
-                self._update_selection_after_removal(removed_index)
-        # else: # 실패 메시지는 UndoManager에서 표시
+        image_path_to_delete, group_id = selected_data
+
+        if group_id not in self.duplicate_groups_data or group_id not in self.group_representatives:
+            QMessageBox.critical(self, "Error", "Group data not found. Cannot process delete.")
+            return
+
+        # 실행 취소 정보 준비
+        representative_path = self.group_representatives[group_id]
+        member_paths = self.duplicate_groups_data[group_id]
+
+        # 1. 파일 삭제 시도 (UndoManager 사용 - 그룹 정보 전달)
+        if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path, member_paths):
+            print(f"File sent to trash (via UndoManager): {image_path_to_delete}")
+
+            # 2. 내부 그룹 데이터에서 파일 제거
+            current_group = self.duplicate_groups_data[group_id]
+            if image_path_to_delete in current_group:
+                current_group.remove(image_path_to_delete)
+                print(f"Removed {os.path.basename(image_path_to_delete)} from group {group_id}. Remaining: {len(current_group)}")
+            else:
+                print(f"Warning: {image_path_to_delete} not found in group data {group_id} upon delete.")
+
+            # 3. 대표 이미지 처리
+            current_representative = self.group_representatives.get(group_id)
+            if image_path_to_delete == current_representative:
+                if current_group:
+                    new_representative = current_group[0]
+                    self.group_representatives[group_id] = new_representative
+                    print(f"Group {group_id}: New representative set to {os.path.basename(new_representative)}")
+                else:
+                    del self.duplicate_groups_data[group_id]
+                    if group_id in self.group_representatives:
+                         del self.group_representatives[group_id]
+                    print(f"Group {group_id} is now empty and removed.")
+
+            # 4 & 5. 테이블 업데이트
+            if group_id in self.duplicate_groups_data:
+                 self._update_table_for_group(group_id)
+            else:
+                 rows_to_remove = []
+                 for row in range(self.duplicate_table_model.rowCount()):
+                      item = self.duplicate_table_model.item(row, 2)
+                      if item and item.text() == group_id:
+                           rows_to_remove.append(row)
+                 for row in sorted(rows_to_remove, reverse=True):
+                      self.duplicate_table_model.removeRow(row)
+
+            # 6. UI 상태 업데이트 (선택 및 패널)
+            self._update_ui_after_action()
 
     def move_selected_image(self, target: str):
-        """선택된 이미지를 이동하고 UndoManager를 통해 추적합니다."""
-        image_path = self._get_selected_image_path(target)
-        if not image_path:
+        """선택된 이미지를 이동하고 그룹 데이터를 업데이트합니다. (구현 필요)"""
+        target_label = self.left_image_label if target == 'original' else self.right_image_label
+        selected_data = self._get_selected_item_data(target_label)
+
+        if not selected_data:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
-        target_name = "Original" if target == 'original' else "Duplicate"
-        destination_folder = QFileDialog.getExistingDirectory(self, f"Select Destination Folder for {target_name} Image")
-
-        if destination_folder:
-            # UndoManager의 move_file 호출
-            if self.undo_manager.move_file(image_path, destination_folder, target):
-                # 성공 시 테이블 행 제거 및 UI 업데이트
-                removed_index = self._remove_selected_row_logic_only()
-                if removed_index != -1:
-                    self._update_selection_after_removal(removed_index)
-            # else: # 실패/취소 메시지는 UndoManager에서 처리
+        image_path_to_move, group_id = selected_data
+        print(f"Move requested for: {image_path_to_move} (Group: {group_id})")
+        QMessageBox.information(self, "Info", "Group-based move is not yet implemented.")
+        # TODO: 그룹 기반 이동 로직 구현 (delete와 유사)
 
     def update_undo_button_state(self, enabled: bool):
         """Undo 버튼의 활성화 상태를 업데이트하는 슬롯"""
         self.undo_button.setEnabled(enabled)
 
-    def _get_selected_row_data(self) -> Optional[Dict[str, Any]]:
-        """테이블 뷰에서 선택된 행의 데이터를 딕셔너리로 반환합니다."""
-        selected_indexes = self.duplicate_table_view.selectedIndexes()
-        if not selected_indexes:
-            return None
-        row = selected_indexes[0].row()
-        try:
-            original_path = self.duplicate_table_model.item(row, 0).text()
-            duplicate_path = self.duplicate_table_model.item(row, 1).text()
-            similarity = int(self.duplicate_table_model.item(row, 2).text())
-            return {'original': original_path, 'duplicate': duplicate_path, 'similarity': similarity}
-        except Exception as e:
-            print(f"Error getting selected row data: {e}")
-            return None
+    def _update_table_for_group(self, group_id: str):
+        """주어진 group_id에 해당하는 테이블 행들을 업데이트합니다."""
+        # 1. 해당 group_id의 모든 행 제거
+        rows_to_remove = []
+        for row in range(self.duplicate_table_model.rowCount()):
+            item = self.duplicate_table_model.item(row, 2) # Group ID 열
+            if item and item.text() == group_id:
+                rows_to_remove.append(row)
+
+        # 행은 뒤에서부터 제거해야 인덱스 오류 방지
+        for row in sorted(rows_to_remove, reverse=True):
+            self.duplicate_table_model.removeRow(row)
+
+        # 2. 업데이트된 그룹 정보로 새 행 추가 (대표 자신과의 쌍은 제외)
+        if group_id in self.duplicate_groups_data and len(self.duplicate_groups_data[group_id]) > 0: # 멤버가 1명 이상인 경우만 처리
+            representative = self.group_representatives.get(group_id)
+            members = self.duplicate_groups_data[group_id]
+            if representative: # 대표가 존재해야 함
+                for member in members:
+                    # 대표 이미지와 멤버 이미지가 다른 경우에만 행 추가
+                    if representative == member:
+                        continue
+
+                    item_representative = QStandardItem(representative)
+                    item_member = QStandardItem(member)
+                    item_group_id = QStandardItem(group_id)
+                    # 읽기 전용 플래그 설정
+                    item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
+                    item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+                    item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
+                    self.duplicate_table_model.appendRow([item_representative, item_member, item_group_id])
+            else:
+                print(f"[Update Table Warning] Representative not found for group {group_id} during update.")
+        # else: 그룹이 삭제되었거나 멤버가 0명 또는 1명만 남은 경우 (쌍을 만들 수 없음) 테이블에 추가할 필요 없음
+
+    def _update_ui_after_action(self):
+        """테이블 및 이미지 패널 상태를 업데이트합니다."""
+        current_selection = self.duplicate_table_view.selectedIndexes()
+        current_row = -1
+        if current_selection:
+            current_row = current_selection[0].row()
+
+        new_row_count = self.duplicate_table_model.rowCount()
+        if new_row_count > 0:
+            # 이전에 선택된 행이 유효하고 범위 내에 있다면 유지, 아니면 첫 행 선택
+            next_row_to_select = current_row if 0 <= current_row < new_row_count else 0
+            if next_row_to_select >= 0:
+                self.duplicate_table_view.selectRow(next_row_to_select)
+                self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
+            else: # 혹시 모를 오류 상황
+                 self.left_image_label.clear()
+                 self.left_info_label.setText("Image Info")
+                 self.right_image_label.clear()
+                 self.right_info_label.setText("Image Info")
+        else:
+            # 테이블이 비었으면 패널 초기화
+            self.left_image_label.clear()
+            self.left_info_label.setText("Image Info")
+            self.right_image_label.clear()
+            self.right_info_label.setText("Image Info")
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 (QApplication 생성 전 호출)

@@ -1,7 +1,7 @@
 import os
 from PIL import Image
 import imagehash
-from typing import List, Tuple, Dict, Optional
+from typing import List, Dict, Optional, Set
 from PyQt5.QtCore import QObject, pyqtSignal
 import numpy as np # NumPy 임포트
 import rawpy # rawpy 임포트
@@ -24,11 +24,14 @@ RAW_EXTENSIONS = {
     '.raf', '.pef', '.srw', '.kdc', '.raw'
 }
 
+# 해시 유사도 임계값
+HASH_THRESHOLD = 5
+
 class ScanWorker(QObject):
     """별도 스레드에서 이미지 스캔 작업을 수행하는 워커"""
     scan_started = pyqtSignal(int) # 총 스캔할 파일 수 전달
     progress_updated = pyqtSignal(int) # 스캔한 파일 수 전달
-    scan_finished = pyqtSignal(int, int, list) # 총 파일 수, 스캔 완료 수, 중복 목록 전달
+    scan_finished = pyqtSignal(int, int, list) # 총 파일 수, 스캔 완료 수, 중복 그룹 목록 전달
     error_occurred = pyqtSignal(str) # 오류 메시지 전달
 
     def __init__(self, folder_path: str, hash_size: int = 8):
@@ -38,9 +41,11 @@ class ScanWorker(QObject):
         self._is_running = True # 외부에서 중단 요청 가능하도록 플래그 추가 (선택적)
 
     def run_scan(self):
-        """이미지 스캔 작업을 실행합니다 (RAW 지원 포함)."""
-        image_hashes: Dict[str, imagehash.ImageHash] = {}
-        duplicates: List[Tuple[str, str, int]] = []
+        """이미지 스캔 작업을 실행하여 중복 그룹 목록을 반환합니다."""
+        # 해시를 키로, 파일 경로 리스트를 값으로 갖는 딕셔너리
+        hashes_to_files: Dict[imagehash.ImageHash, List[str]] = {}
+        # 이미 처리된(그룹에 포함된) 파일 경로 집합
+        grouped_files: Set[str] = set()
         processed_files_count = 0 # 실제로 처리(해싱)된 파일 수
         total_target_files = 0 # 스캔 대상 확장자를 가진 총 파일 수
 
@@ -54,15 +59,21 @@ class ScanWorker(QObject):
             total_target_files = len(target_files)
             self.scan_started.emit(total_target_files)
 
-            for filename in target_files:
+            for i, filename in enumerate(target_files):
                 if not self._is_running:
-                    print("Scan cancelled.")
                     break
 
                 file_path = os.path.join(self.folder_path, filename)
+
+                # 이미 그룹화된 파일은 건너뛰기 (효율성 향상)
+                if file_path in grouped_files:
+                    self.progress_updated.emit(i + 1) # 진행률은 전체 파일 수 기준으로 업데이트
+                    continue
+
                 file_ext = os.path.splitext(filename)[1].lower()
                 img_pil = None # PIL Image 객체 저장용
                 raw_obj = None # rawpy 객체 저장용
+                current_hash = None
 
                 try:
                     # 파일 확장자에 따라 처리 분기
@@ -71,7 +82,7 @@ class ScanWorker(QObject):
                             raw_obj = rawpy.imread(file_path)
                             # postprocess()로 RGB 이미지 데이터(NumPy 배열) 얻기
                             # 옵션 추가 가능: use_camera_wb=True, half_size=True 등
-                            rgb_array = raw_obj.postprocess()
+                            rgb_array = raw_obj.postprocess(use_camera_wb=True)
                             img_pil = Image.fromarray(rgb_array) # NumPy 배열을 PIL Image로 변환
                             print(f"Processed RAW: {file_path}")
                         except rawpy.LibRawIOError:
@@ -111,15 +122,21 @@ class ScanWorker(QObject):
                         processed_files_count += 1
                         current_hash = imagehash.phash(img_pil, hash_size=self.hash_size)
 
-                        found_duplicate = False
-                        for path, existing_hash in image_hashes.items():
+                        found_group = False
+                        # 기존 해시 그룹들과 비교
+                        for existing_hash, file_list in hashes_to_files.items():
                             similarity = existing_hash - current_hash
-                            if similarity <= 5:
-                                duplicates.append((path, file_path, 100 - similarity * 100 // (self.hash_size**2)))
-                                found_duplicate = True
-                                # break
-                        if not found_duplicate:
-                            image_hashes[file_path] = current_hash
+                            if similarity <= HASH_THRESHOLD:
+                                # 유사 그룹 발견 시 현재 파일 추가 및 grouped_files에 등록
+                                file_list.append(file_path)
+                                grouped_files.add(file_path)
+                                found_group = True
+                                break # 첫 번째 매칭 그룹에만 추가
+
+                        # 유사 그룹 없으면 새로운 그룹 생성
+                        if not found_group:
+                            hashes_to_files[current_hash] = [file_path]
+                            # 새 그룹의 첫 파일도 grouped_files에 등록될 필요는 없음 (어차피 다음 순회에서 비교됨)
 
                 except Exception as e:
                     # 파일 열기/처리 중 오류 발생 시 (처리된 파일 수에 포함 안 됨)
@@ -133,11 +150,17 @@ class ScanWorker(QObject):
                             print(f"Error closing PIL image {file_path}: {close_err}")
 
                 # 진행률 업데이트 (처리된 파일 수 기준)
-                self.progress_updated.emit(processed_files_count)
+                self.progress_updated.emit(i + 1)
 
+            # --- 최종 중복 그룹 목록 생성 ---
+            duplicate_groups: List[List[str]] = []
             if self._is_running:
-                # 완료 신호 (총 대상 파일 수, 처리된 파일 수, 중복 목록)
-                self.scan_finished.emit(total_target_files, processed_files_count, duplicates)
+                for file_list in hashes_to_files.values():
+                    if len(file_list) > 1: # 그룹 크기가 2 이상인 경우만 중복으로 간주
+                        duplicate_groups.append(file_list)
+
+                # 완료 신호 (총 대상 파일 수, 처리된 파일 수, 중복 그룹 목록)
+                self.scan_finished.emit(total_target_files, processed_files_count, duplicate_groups)
 
         except FileNotFoundError:
             self.error_occurred.emit(f"Error: Folder not found - {self.folder_path}")

@@ -15,7 +15,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox, QApplication, QTableView, QLabel
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer, Qt
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import send2trash
 
 # Windows 환경에서 사용할 winshell 패키지
@@ -63,79 +63,70 @@ class UndoManager(QObject):
             # QMessageBox.information(self.main_window, "Info", message)
             print(f"[UndoManager Info] {message}") # 콘솔 로그로 대체
     
-    def delete_file(self, original_path: str, target_type: str) -> bool:
-        """파일을 휴지통으로 보내고 작업을 추적합니다."""
+    def delete_file(self, deleted_path: str, group_id: str, representative_path: str, member_paths: List[str]) -> bool:
+        """파일을 휴지통으로 보내고 작업을 추적합니다. (그룹 정보 사용)"""
         success = False
         try:
-            normalized_path = os.path.normpath(original_path)
+            normalized_path = os.path.normpath(deleted_path)
             send2trash.send2trash(normalized_path)
             success = True
             print(f"File sent to trash: {normalized_path}")
         except FileNotFoundError:
-            self.show_message(f"File not found: {original_path}", 'error')
+            self.show_message(f"File not found: {deleted_path}", 'error')
         except Exception as e:
-            self.show_message(f"Failed to send file to trash: {e}\nPath: {original_path}", 'error')
+            self.show_message(f"Failed to send file to trash: {e}\nPath: {deleted_path}", 'error')
 
         if success:
-            # 테이블 모델에서 현재 선택된 행의 데이터 가져오기
-            # MainWindow의 _get_selected_row_data 활용
-            selected_data = self.main_window._get_selected_row_data()
-            if selected_data:
-                action_details = {
-                    'type': self.ACTION_DELETE,
-                    'target': target_type,
-                    'original_path': selected_data['original'],
-                    'duplicate_path': selected_data['duplicate'],
-                    'similarity': selected_data['similarity'],
-                    'deleted_path': original_path # 삭제된 파일의 원래 경로 저장
-                }
-                self.actions.append(action_details)
-                self.undo_status_changed.emit(True)
-            else:
-                print("[UndoManager Error] Could not get selected row data after deletion.")
-                success = False # 작업 추적 실패
+            # 전달받은 그룹 정보를 사용하여 action_details 생성
+            action_details = {
+                'type': self.ACTION_DELETE,
+                'group_id': group_id,
+                'representative_path': representative_path, # 삭제 시점의 대표
+                'member_paths': list(member_paths), # 삭제 시점의 멤버 목록 (복사본)
+                'deleted_path': deleted_path # 실제 삭제된 파일 경로
+            }
+            self.actions.append(action_details)
+            self.undo_status_changed.emit(True)
+            # else: # selected_data 의존성 제거됨
+            #     print("[UndoManager Error] Could not get selected row data after deletion.")
+            #     success = False # 작업 추적 실패
         return success
 
-    def move_file(self, original_path: str, destination_folder: str, target_type: str) -> bool:
-        """파일을 이동하고 작업을 추적합니다."""
+    def move_file(self, moved_from_path: str, destination_folder: str, group_id: str, representative_path: str, member_paths: List[str]) -> bool:
+        """파일을 이동하고 작업을 추적합니다. (그룹 정보 사용)"""
         success = False
         destination_path = ""
         try:
-            base_filename = os.path.basename(original_path)
+            base_filename = os.path.basename(moved_from_path)
             destination_path = os.path.join(destination_folder, base_filename)
-            # 덮어쓰기 확인 (QMessageBox 직접 호출)
             if os.path.exists(destination_path):
                 reply = QMessageBox.question(self.main_window, 'Confirm Overwrite',
                                          f"File already exists: {destination_path}\nOverwrite?",
                                          QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
                 if reply == QMessageBox.No:
-                    return False # 작업 취소
-            # 이동
-            shutil.move(original_path, destination_path)
+                    return False
+            shutil.move(moved_from_path, destination_path)
             success = True
-            print(f"File moved: {original_path} -> {destination_path}")
+            print(f"File moved: {moved_from_path} -> {destination_path}")
         except FileNotFoundError:
-            self.show_message(f"File not found: {original_path}", 'error')
+            self.show_message(f"File not found: {moved_from_path}", 'error')
         except Exception as e:
-            self.show_message(f"Failed to move file: {e}\nFrom: {original_path}\nTo: {destination_path}", 'error')
+            self.show_message(f"Failed to move file: {e}\nFrom: {moved_from_path}\nTo: {destination_path}", 'error')
 
         if success:
-            selected_data = self.main_window._get_selected_row_data()
-            if selected_data:
-                action_details = {
-                    'type': self.ACTION_MOVE,
-                    'target': target_type,
-                    'original_path': selected_data['original'],
-                    'duplicate_path': selected_data['duplicate'],
-                    'similarity': selected_data['similarity'],
-                    'moved_from': original_path,
-                    'moved_to': destination_path
-                }
-                self.actions.append(action_details)
-                self.undo_status_changed.emit(True)
-            else:
-                 print("[UndoManager Error] Could not get selected row data after move.")
-                 # 이동은 성공했으나 추적 실패 시 어떻게 처리할지? 일단 성공으로 간주.
+            # 전달받은 그룹 정보 사용
+            action_details = {
+                'type': self.ACTION_MOVE,
+                'group_id': group_id,
+                'representative_path': representative_path,
+                'member_paths': list(member_paths),
+                'moved_from': moved_from_path,
+                'moved_to': destination_path
+            }
+            self.actions.append(action_details)
+            self.undo_status_changed.emit(True)
+            # else:
+            #      print("[UndoManager Error] Could not get selected row data after move.")
         return success
 
     def can_undo(self):
@@ -192,18 +183,14 @@ class UndoManager(QObject):
              self.show_message("Invalid action data for undo delete.", 'error')
              return False, None
 
-        # 파일 복원 시도
         if self._restore_from_trash(original_path):
-            # 테이블에 데이터 복원
-            if self._add_to_table(delete_action):
-                 self.show_message(f"File restored: {os.path.basename(original_path)}")
-                 return True, original_path
-            else:
-                 # 파일 복원은 성공했으나 테이블 추가 실패
-                 self.show_message(f"File restored but failed to update list: {os.path.basename(original_path)}", 'warning')
-                 return True, original_path # 파일 복원 자체는 성공
+            # 테이블 복원 로직 변경: _add_to_table 대신 MainWindow의 그룹 업데이트 로직 호출 필요
+            # 임시: 콘솔 로그만 출력하고 MainWindow 업데이트는 외부에서 처리하도록 유도
+            print(f"[UndoManager] File restored: {original_path}. Triggering UI update needed.")
+            # TODO: MainWindow의 그룹 데이터 및 테이블 업데이트 로직 호출 방법 강구
+            # self.main_window._restore_group_ui(delete_action) # 예시
+            return True, original_path
         else:
-            # 복원 실패 메시지는 _restore_from_trash에서 표시
             return False, None
     
     def _undo_move(self, move_action):
@@ -232,12 +219,10 @@ class UndoManager(QObject):
 
         try:
             shutil.move(current_path, original_path)
-            if self._add_to_table(move_action):
-                 self.show_message(f"Move undone: {os.path.basename(original_path)}")
-                 return True, original_path
-            else:
-                 self.show_message(f"Move undone but failed to update list: {os.path.basename(original_path)}", 'warning')
-                 return True, original_path
+            # 테이블 복원 로직 변경 (삭제와 동일)
+            print(f"[UndoManager] Move undone for: {original_path}. Triggering UI update needed.")
+            # TODO: MainWindow의 그룹 데이터 및 테이블 업데이트 로직 호출 방법 강구
+            return True, original_path
         except Exception as e:
             self.show_message(f"Failed to undo move: {e}", 'error')
             return False, None
@@ -296,33 +281,6 @@ class UndoManager(QObject):
             self.show_message(f"Failed to restore from recycle bin: {e}", 'error')
             return False
     
-    def _add_to_table(self, action_details: Dict[str, Any]) -> bool:
-        """복원된 항목 데이터를 테이블 모델의 첫 번째 행에 삽입합니다."""
-        try:
-            model: QStandardItemModel = self.main_window.duplicate_table_model
-            item_original = QStandardItem(action_details['original_path'])
-            item_duplicate = QStandardItem(action_details['duplicate_path'])
-            item_similarity = QStandardItem(str(action_details['similarity']))
-            item_similarity.setTextAlignment(Qt.AlignCenter)
-            model.insertRow(0, [item_original, item_duplicate, item_similarity])
-
-            # 테이블 뷰 업데이트 및 선택
-            table_view: QTableView = self.main_window.duplicate_table_view
-            table_view.selectRow(0)
-            # MainWindow의 on_table_item_clicked 호출하여 패널 업데이트
-            self.main_window.on_table_item_clicked(model.index(0, 0))
-
-            # 상태 레이블 업데이트
-            status_label: QLabel = self.main_window.status_label
-            new_row_count = model.rowCount()
-            try:
-                status_text_part = status_label.text().split(" Duplicates found:")[0]
-                status_label.setText(f"{status_text_part} Duplicates found: {new_row_count}")
-            except IndexError:
-                 status_label.setText(f"Duplicates found: {new_row_count}")
-
-            return True
-        except Exception as e:
-            print(f"[UndoManager Error] Failed to add item back to table: {e}")
-            self.show_message(f"Failed to update the list after restoring file.", 'error')
-            return False 
+    # _add_to_table 메서드는 더 이상 직접 사용되지 않음 (제거 또는 주석 처리)
+    # def _add_to_table(self, action_details: Dict[str, Any]) -> bool:
+    #     ... 
