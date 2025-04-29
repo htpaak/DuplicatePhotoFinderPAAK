@@ -230,6 +230,7 @@ class MainWindow(QMainWindow):
         self.duplicate_groups_data: Dict[str, List[str]] = {} # {group_id: [file_path1, file_path2, ...]}
         self.group_representatives: Dict[str, str] = {} # {group_id: representative_file_path}
         self.last_acted_group_id: Optional[str] = None # 마지막으로 액션이 적용된 그룹 ID
+        self.previous_selection_index: Optional[int] = None # 액션 전 마지막 선택 인덱스
 
         self.setWindowTitle("Duplicate Image Finder")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
@@ -585,11 +586,21 @@ class MainWindow(QMainWindow):
 
     def delete_selected_image(self, target: str):
         """선택된 이미지를 휴지통으로 보내고 그룹 데이터를 업데이트합니다."""
+        # 액션 전 선택 상태 저장
+        current_selection = self.duplicate_table_view.selectedIndexes()
+        if current_selection:
+            self.previous_selection_index = current_selection[0].row()
+        else:
+            self.previous_selection_index = None # 선택된 항목 없이 삭제 시도
+            # QMessageBox.warning(self, "Warning", "Please select an image pair from the list.") # 아래에서 이미 처리됨
+            # return
+
         target_label = self.left_image_label if target == 'original' else self.right_image_label
         selected_data = self._get_selected_item_data(target_label)
 
         if not selected_data:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
+            self.previous_selection_index = None # 선택된 데이터 없으면 초기화
             return
 
         image_path_to_delete, group_id = selected_data
@@ -598,11 +609,12 @@ class MainWindow(QMainWindow):
         if group_id not in self.duplicate_groups_data or group_id not in self.group_representatives:
             QMessageBox.critical(self, "Error", "Group data not found. Cannot process delete.")
             self.last_acted_group_id = None # 오류 시 초기화
+            self.previous_selection_index = None
             return
 
         # 실행 취소 정보 준비
         representative_path = self.group_representatives[group_id]
-        member_paths = self.duplicate_groups_data[group_id]
+        member_paths = list(self.duplicate_groups_data[group_id]) # 복사본 전달
 
         # 1. 파일 삭제 시도 (UndoManager 사용 - 그룹 정보 전달)
         if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path, member_paths):
@@ -704,31 +716,36 @@ class MainWindow(QMainWindow):
 
         액션(삭제, 이동, 실행취소) 후 호출되어,
         액션이 적용된 그룹의 첫 번째 항목을 선택하려고 시도합니다.
+        그룹이 사라진 경우 이전 선택 위치 또는 마지막 항목을 선택합니다.
         """
         next_row_to_select = -1
         new_row_count = self.duplicate_table_model.rowCount()
 
         if new_row_count > 0:
+            # 1. 마지막 액션 그룹 ID로 행 찾기 시도
             if self.last_acted_group_id:
-                # 마지막 액션이 적용된 그룹 ID의 첫 번째 행 찾기
                 for row in range(new_row_count):
                     item = self.duplicate_table_model.item(row, 2) # Group ID 열
                     if item and item.text() == self.last_acted_group_id:
                         next_row_to_select = row
                         break # 첫 번째 일치하는 행 찾음
-                # 만약 해당 그룹 ID를 찾지 못했다면 (그룹이 삭제된 경우), 첫 번째 행 선택
-                if next_row_to_select == -1:
-                    next_row_to_select = 0
-            else:
-                # 특정 그룹 액션이 아니었거나 ID 정보가 없으면 첫 번째 행 선택
-                next_row_to_select = 0
 
-            # 유효한 행 인덱스를 찾았으면 선택 및 UI 업데이트
+            # 2. 액션 그룹을 찾지 못했거나 특정 그룹 액션이 아니었던 경우
+            if next_row_to_select == -1:
+                if self.previous_selection_index is not None:
+                    # 이전 선택 인덱스를 사용하되, 새 테이블 크기를 넘지 않도록 함
+                    next_row_to_select = min(self.previous_selection_index, new_row_count - 1)
+                else:
+                    # 이전 선택도 없으면 첫 번째 행 선택
+                    next_row_to_select = 0
+
+            # 3. 유효한 행 인덱스를 선택하고 UI 업데이트
             if 0 <= next_row_to_select < new_row_count:
                 self.duplicate_table_view.selectRow(next_row_to_select)
                 self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
             else:
-                # 이 경우는 이론상 발생하기 어려움 (테이블이 비어있지 않다면)
+                # 모든 행이 사라진 후 여기까지 오지는 않음 (위의 new_row_count > 0 에서 처리)
+                # 만약의 경우 패널 초기화 (이론상 도달하기 어려움)
                 self.left_image_label.clear()
                 self.left_info_label.setText("Image Info")
                 self.right_image_label.clear()
@@ -740,10 +757,19 @@ class MainWindow(QMainWindow):
             self.right_image_label.clear()
             self.right_info_label.setText("Image Info")
 
-        self.last_acted_group_id = None # 상태 업데이트 후 ID 초기화
+        # 사용된 상태 변수 초기화
+        self.last_acted_group_id = None
+        self.previous_selection_index = None
 
     def _handle_group_state_restore(self, action_details: dict):
         """UndoManager로부터 그룹 상태 복원 요청을 처리합니다."""
+        # 액션 전 선택 상태 저장 (실행 취소 시에도 필요)
+        current_selection = self.duplicate_table_view.selectedIndexes()
+        if current_selection:
+            self.previous_selection_index = current_selection[0].row()
+        else:
+            self.previous_selection_index = None
+
         action_type = action_details.get('type')
         group_id = action_details.get('group_id')
         self.last_acted_group_id = group_id # 복원 대상 그룹 ID 저장
