@@ -309,14 +309,36 @@ class MainWindow(QMainWindow):
             return image_path_item.text()
         return None
 
-    def _remove_selected_row_logic_only(self):
-        """UI 업데이트 없이 테이블 모델에서 선택된 행만 제거하는 로직"""
+    def _remove_selected_row_logic_only(self) -> int:
+        """UI 업데이트 없이 테이블 모델에서 선택된 행만 제거하고 제거된 행 인덱스를 반환합니다."""
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if selected_indexes:
             selected_row = selected_indexes[0].row()
             self.duplicate_table_model.removeRow(selected_row)
-            # 패널 초기화나 다음 행 선택 로직은 Undo/Redo 후 처리되므로 여기서는 제거
-            # 상태 레이블 업데이트도 UndoManager에서 처리 가능 or 별도 관리
+            return selected_row # 제거된 행 인덱스 반환
+        return -1 # 선택된 행이 없거나 제거 실패
+
+    def _update_selection_after_removal(self, removed_row_index: int):
+        """행 제거 후 테이블 선택 및 이미지 패널을 업데이트합니다."""
+        new_row_count = self.duplicate_table_model.rowCount()
+        if new_row_count > 0:
+            # 다음에 선택할 행 인덱스 결정
+            next_row_to_select = min(removed_row_index, new_row_count - 1)
+            if next_row_to_select >= 0: # 유효한 인덱스인지 확인
+                self.duplicate_table_view.selectRow(next_row_to_select)
+                self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
+            else:
+                # 이상 상황: 패널 초기화
+                self.left_image_label.clear()
+                self.left_info_label.setText("Image Info")
+                self.right_image_label.clear()
+                self.right_info_label.setText("Image Info")
+        else:
+            # 남은 행이 없으면 패널 초기화
+            self.left_image_label.clear()
+            self.left_info_label.setText("Image Info")
+            self.right_image_label.clear()
+            self.right_info_label.setText("Image Info")
 
     def delete_selected_image(self, target: str):
         """선택된 이미지를 휴지통으로 보내고 UndoManager를 통해 추적합니다."""
@@ -327,8 +349,10 @@ class MainWindow(QMainWindow):
 
         # UndoManager의 delete_file 호출
         if self.undo_manager.delete_file(image_path, target):
-            # 성공 시 테이블 행 제거 (UndoManager가 추적)
-            self._remove_selected_row_logic_only() # UI 업데이트 없는 행 제거 로직 호출
+            # 성공 시 테이블 행 제거 및 UI 업데이트
+            removed_index = self._remove_selected_row_logic_only()
+            if removed_index != -1:
+                self._update_selection_after_removal(removed_index)
         # else: # 실패 메시지는 UndoManager에서 표시
 
     def move_selected_image(self, target: str):
@@ -344,7 +368,10 @@ class MainWindow(QMainWindow):
         if destination_folder:
             # UndoManager의 move_file 호출
             if self.undo_manager.move_file(image_path, destination_folder, target):
-                self._remove_selected_row_logic_only() # 성공 시 행 제거
+                # 성공 시 테이블 행 제거 및 UI 업데이트
+                removed_index = self._remove_selected_row_logic_only()
+                if removed_index != -1:
+                    self._update_selection_after_removal(removed_index)
             # else: # 실패/취소 메시지는 UndoManager에서 처리
 
     def update_undo_button_state(self, enabled: bool):
