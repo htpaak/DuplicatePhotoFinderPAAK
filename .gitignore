@@ -1,0 +1,34 @@
+# Python bytecode files
+*.pyc
+*.pyo
+__pycache__/
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE settings
+.idea/
+.vscode/
+
+# Log files
+logs/
+debug.log
+
+# Temporary files
+temp/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# Environment/config files
+*.env
+
+# Build/distribution files
+dist/
+build/
+*.egg-info/
+*.tar.gz
+*.spec  # PyInstaller spec files
