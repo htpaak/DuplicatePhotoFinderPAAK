@@ -427,7 +427,8 @@ class MainWindow(QMainWindow):
                 }
                 self.action_history.append(action_details) # 작업 기록 추가
                 self.undo_button.setEnabled(True) # Undo 버튼 활성화
-                QMessageBox.information(self, "Success", f"{target_name} file moved successfully to:\n{destination_folder}")
+                # 정보 메시지 제거
+                # QMessageBox.information(self, "Success", f"{target_name} file moved successfully to:\n{destination_folder}")
                 self._remove_selected_row()
             except FileNotFoundError:
                  QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
@@ -476,7 +477,8 @@ class MainWindow(QMainWindow):
             self.duplicate_table_view.selectRow(0)
             self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
 
-            QMessageBox.information(self, "Undo Successful", f"{target_name} file successfully restored to:\n{original_file_path}")
+            # 정보 메시지 제거
+            # QMessageBox.information(self, "Undo Successful", f"{target_name} file successfully restored to:\n{original_file_path}")
 
         except Exception as e:
             QMessageBox.critical(self, "Undo Error", f"Failed {operation_desc}: {e}\nFrom: {current_file_path}\nTo: {original_file_path}")
