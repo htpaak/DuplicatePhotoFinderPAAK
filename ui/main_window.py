@@ -32,7 +32,6 @@ class MainWindow(QMainWindow):
         self.left_image_label.setAlignment(Qt.AlignCenter)
         self.left_image_label.setFrameShape(QFrame.Box) # 테두리 추가
         self.left_image_label.setMinimumSize(300, 200) # 최소 크기 설정
-        self.left_image_label.setScaledContents(True)
         left_panel_layout.addWidget(self.left_image_label, 1) # Stretch factor 1 설정
         self.left_info_label = QLabel("Image Info") # 정보 레이블
         self.left_info_label.setAlignment(Qt.AlignCenter)
@@ -54,7 +53,6 @@ class MainWindow(QMainWindow):
         self.right_image_label.setAlignment(Qt.AlignCenter)
         self.right_image_label.setFrameShape(QFrame.Box) # 테두리 추가
         self.right_image_label.setMinimumSize(300, 200) # 최소 크기 설정
-        self.right_image_label.setScaledContents(True)
         right_panel_layout.addWidget(self.right_image_label, 1) # Stretch factor 1 설정
         self.right_info_label = QLabel("Image Info") # 정보 레이블
         self.right_info_label.setAlignment(Qt.AlignCenter)
@@ -139,7 +137,9 @@ class MainWindow(QMainWindow):
         """이미지 레이블과 정보 레이블을 업데이트하는 헬퍼 메서드"""
         pixmap = QPixmap(file_path)
         if not pixmap.isNull():
-            image_label.setPixmap(pixmap)
+            # 원본 비율 유지하며 레이블 크기에 맞게 스케일링
+            scaled_pixmap = pixmap.scaled(image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            image_label.setPixmap(scaled_pixmap) # 스케일된 이미지 설정
             try:
                 file_size_kb = round(os.path.getsize(file_path) / 1024)
                 img_format = os.path.splitext(file_path)[1].upper()[1:]
@@ -153,8 +153,10 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Error getting file info: {e}")
                 info_label.setText("Error getting info.")
+                image_label.setText("Error Loading")
         else:
             info_label.setText("Cannot load image.")
+            image_label.clear()
             image_label.setText("Invalid Image File")
 
     def browse_left_image(self):
