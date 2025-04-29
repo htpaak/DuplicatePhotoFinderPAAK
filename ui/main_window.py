@@ -160,15 +160,15 @@ class MainWindow(QMainWindow):
 
         # --- 시그널 연결 ---
         self.left_browse_button.clicked.connect(self.browse_left_image)
-        self.right_browse_button.clicked.connect(self.browse_right_image) # 오른쪽 Browse 버튼 시그널 연결
-        scan_folder_button.clicked.connect(self.scan_folder) # 스캔 버튼 시그널 연결
-        self.duplicate_table_view.clicked.connect(self.on_table_item_clicked) # 테이블 클릭 시그널 연결
-        # 삭제 버튼 시그널 연결 (양쪽 버튼 모두 동일 기능 수행)
-        self.left_delete_button.clicked.connect(self.delete_selected_duplicate)
-        self.right_delete_button.clicked.connect(self.delete_selected_duplicate)
-        # 이동 버튼 시그널 연결 (양쪽 버튼 모두 동일 기능 수행)
-        self.left_move_button.clicked.connect(self.move_selected_duplicate)
-        self.right_move_button.clicked.connect(self.move_selected_duplicate)
+        self.right_browse_button.clicked.connect(self.browse_right_image)
+        scan_folder_button.clicked.connect(self.scan_folder)
+        self.duplicate_table_view.clicked.connect(self.on_table_item_clicked)
+        # 삭제 버튼 시그널 연결 (대상 이미지 지정)
+        self.left_delete_button.clicked.connect(lambda: self.delete_selected_image('original'))
+        self.right_delete_button.clicked.connect(lambda: self.delete_selected_image('duplicate'))
+        # 이동 버튼 시그널 연결 (대상 이미지 지정)
+        self.left_move_button.clicked.connect(lambda: self.move_selected_image('original'))
+        self.right_move_button.clicked.connect(lambda: self.move_selected_image('duplicate'))
 
         self._center_window() # 창 중앙 정렬 메서드 호출
 
@@ -279,77 +279,83 @@ class MainWindow(QMainWindow):
             self._update_image_info(self.left_image_label, self.left_info_label, original_path_item.text())
             self._update_image_info(self.right_image_label, self.right_info_label, duplicate_path_item.text())
 
-    def _get_selected_duplicate_path(self) -> Optional[str]:
-        """테이블 뷰에서 선택된 행의 중복 이미지 경로를 반환합니다."""
+    def _get_selected_image_path(self, target: str) -> Optional[str]:
+        """테이블 뷰에서 선택된 행의 원본 또는 중복 이미지 경로를 반환합니다."""
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if not selected_indexes:
             return None
         selected_row = selected_indexes[0].row()
-        duplicate_path_item = self.duplicate_table_model.item(selected_row, 1) # 중복 이미지 경로 열
-        if duplicate_path_item:
-            return duplicate_path_item.text()
+
+        column_index = 0 if target == 'original' else 1 # 0: 원본, 1: 중복
+        image_path_item = self.duplicate_table_model.item(selected_row, column_index)
+
+        if image_path_item:
+            return image_path_item.text()
         return None
 
     def _remove_selected_row(self):
-        """테이블 뷰에서 선택된 행을 제거합니다."""
+        """테이블 뷰에서 선택된 행을 제거하고 양쪽 이미지 패널을 초기화합니다."""
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if selected_indexes:
             selected_row = selected_indexes[0].row()
             self.duplicate_table_model.removeRow(selected_row)
             # 상태 레이블 업데이트
             current_duplicates = self.duplicate_table_model.rowCount()
-            status_text = self.status_label.text().split("Duplicates found:")[0]
-            self.status_label.setText(f"{status_text} Duplicates found: {current_duplicates}")
-            # 삭제/이동 후 이미지 패널 초기화 (ImageLabel의 clear 사용)
+            try:
+                status_text_part = self.status_label.text().split(" Duplicates found:")[0]
+                self.status_label.setText(f"{status_text_part} Duplicates found: {current_duplicates}")
+            except IndexError:
+                 # " Duplicates found:" 텍스트가 없는 경우 대비
+                 self.status_label.setText(f"Duplicates found: {current_duplicates}")
+
+            # 삭제/이동 후 양쪽 이미지 패널 초기화
+            self.left_image_label.clear()
+            self.left_info_label.setText("Image Info")
             self.right_image_label.clear()
             self.right_info_label.setText("Image Info")
-            # 원본 이미지도 선택 해제된 것으로 간주하여 초기화 (선택적)
-            # self.left_image_label.clear()
-            # self.left_info_label.setText("Image Info")
 
-    def delete_selected_duplicate(self):
-        """선택된 중복 이미지를 삭제합니다."""
-        duplicate_path = self._get_selected_duplicate_path()
-        if not duplicate_path:
-            QMessageBox.warning(self, "Warning", "Please select a duplicate image from the list.")
+    def delete_selected_image(self, target: str):
+        """선택된 원본 또는 중복 이미지를 삭제합니다."""
+        image_path = self._get_selected_image_path(target)
+        if not image_path:
+            QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
-        reply = QMessageBox.question(self, 'Confirm Delete',
-                                     f"Are you sure you want to delete this file?\n{duplicate_path}",
+        target_name = "Original" if target == 'original' else "Duplicate"
+        reply = QMessageBox.question(self, f'Confirm Delete {target_name}',
+                                     f"Are you sure you want to delete this {target_name.lower()} file?\n{image_path}",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
         if reply == QMessageBox.Yes:
             try:
-                os.remove(duplicate_path)
-                QMessageBox.information(self, "Success", f"File deleted successfully:\n{duplicate_path}")
+                os.remove(image_path)
+                QMessageBox.information(self, "Success", f"{target_name} file deleted successfully:\n{image_path}")
                 self._remove_selected_row()
             except FileNotFoundError:
                 QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
-                # 파일이 없어도 테이블에서는 제거할 수 있음
-                self._remove_selected_row()
+                self._remove_selected_row() # 테이블에서도 제거
             except PermissionError:
-                QMessageBox.critical(self, "Error", "Permission denied. Cannot delete the file.")
+                QMessageBox.critical(self, "Error", f"Permission denied. Cannot delete the {target_name.lower()} file.")
             except Exception as e:
-                QMessageBox.critical(self, "Error", f"Failed to delete file: {e}")
+                QMessageBox.critical(self, "Error", f"Failed to delete {target_name.lower()} file: {e}")
 
-    def move_selected_duplicate(self):
-        """선택된 중복 이미지를 다른 폴더로 이동합니다."""
-        duplicate_path = self._get_selected_duplicate_path()
-        if not duplicate_path:
-            QMessageBox.warning(self, "Warning", "Please select a duplicate image from the list.")
+    def move_selected_image(self, target: str):
+        """선택된 원본 또는 중복 이미지를 다른 폴더로 이동합니다."""
+        image_path = self._get_selected_image_path(target)
+        if not image_path:
+            QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
 
-        destination_folder = QFileDialog.getExistingDirectory(self, "Select Destination Folder")
+        target_name = "Original" if target == 'original' else "Duplicate"
+        destination_folder = QFileDialog.getExistingDirectory(self, f"Select Destination Folder for {target_name} Image")
         if destination_folder:
-            # 대상 폴더와 원본 파일의 폴더가 같은 경우 경고 (선택적)
-            if os.path.dirname(duplicate_path) == destination_folder:
+            if os.path.dirname(image_path) == destination_folder:
                  QMessageBox.warning(self, "Warning", "Source and destination folders are the same.")
                  return
             try:
-                base_filename = os.path.basename(duplicate_path)
+                base_filename = os.path.basename(image_path)
                 destination_path = os.path.join(destination_folder, base_filename)
 
-                # 대상 경로에 동일한 파일 이름이 있는지 확인 (선택적)
                 if os.path.exists(destination_path):
                     reply = QMessageBox.question(self, 'Confirm Overwrite',
                                              f"File already exists in the destination folder:\n{destination_path}\nOverwrite?",
@@ -357,16 +363,16 @@ class MainWindow(QMainWindow):
                     if reply == QMessageBox.No:
                         return
 
-                shutil.move(duplicate_path, destination_path)
-                QMessageBox.information(self, "Success", f"File moved successfully to:\n{destination_folder}")
+                shutil.move(image_path, destination_path)
+                QMessageBox.information(self, "Success", f"{target_name} file moved successfully to:\n{destination_folder}")
                 self._remove_selected_row()
             except FileNotFoundError:
                  QMessageBox.critical(self, "Error", "File not found. It might have been already deleted or moved.")
                  self._remove_selected_row()
             except PermissionError:
-                QMessageBox.critical(self, "Error", "Permission denied. Cannot move the file.")
+                QMessageBox.critical(self, "Error", f"Permission denied. Cannot move the {target_name.lower()} file.")
             except Exception as e:
-                 QMessageBox.critical(self, "Error", f"Failed to move file: {e}")
+                 QMessageBox.critical(self, "Error", f"Failed to move {target_name.lower()} file: {e}")
 
 if __name__ == '__main__':
     app = QApplication(sys.argv)
