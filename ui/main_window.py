@@ -361,19 +361,25 @@ class MainWindow(QMainWindow):
     @pyqtSlot(int, int, list)
     def handle_scan_finished(self, total_files: int, scanned_count: int, duplicates: list):
         """스캔 완료 처리 슬롯"""
-        self.total_files_to_scan = total_files # 완료 시에도 총 파일 수 업데이트 (혹시 모르니)
+        self.total_files_to_scan = total_files
         self.status_label.setText(f"Scan complete. {scanned_count} / {total_files} files scanned. Duplicates found: {len(duplicates)}")
         # self.scan_folder_button.setEnabled(True) # cleanup_scan_thread에서 처리
+
+        # 테이블 모델 업데이트 전, 유사도(similarity) 기준으로 내림차순 정렬
+        sorted_duplicates = sorted(duplicates, key=lambda item: item[2], reverse=True)
+
         # 테이블 모델 업데이트
         self.duplicate_table_model.removeRows(0, self.duplicate_table_model.rowCount())
-        for original, duplicate, similarity in duplicates:
+        # 정렬된 목록 사용
+        for original, duplicate, similarity in sorted_duplicates:
             item_original = QStandardItem(original)
             item_duplicate = QStandardItem(duplicate)
             item_similarity = QStandardItem(str(similarity))
             item_similarity.setTextAlignment(Qt.AlignCenter)
             self.duplicate_table_model.appendRow([item_original, item_duplicate, item_similarity])
 
-        if duplicates:
+        # if duplicates: # 정렬된 목록 기준으로 변경
+        if sorted_duplicates:
             self.duplicate_table_view.selectRow(0)
             self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
         else:
