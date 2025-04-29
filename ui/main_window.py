@@ -6,10 +6,65 @@ from PyQt5.QtWidgets import (
     QLabel, QPushButton, QFrame, QListView, QSplitter, QTableView,
     QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QDesktopWidget 추가
 )
-from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem
-from PyQt5.QtCore import Qt, QModelIndex # QModelIndex 추가
+from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent # QResizeEvent 추가
+from PyQt5.QtCore import Qt, QModelIndex, QSize # QSize 추가
 from image_processor import find_duplicates # image_processor 임포트
 from typing import Optional
+
+class ImageLabel(QLabel):
+    """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self._original_pixmap: Optional[QPixmap] = None
+        self.setAlignment(Qt.AlignCenter) # 기본 정렬 설정
+        self.setMinimumSize(100, 100) # 최소 크기 설정 (예시)
+
+    def setPixmapFromFile(self, file_path: str) -> bool:
+        """파일 경로로부터 Pixmap을 로드하고 원본을 저장합니다."""
+        if not file_path or not os.path.exists(file_path):
+            self._original_pixmap = None
+            self.setText("File Not Found")
+            return False
+
+        self._original_pixmap = QPixmap(file_path)
+        if self._original_pixmap.isNull():
+            self._original_pixmap = None
+            self.setText("Invalid Image File")
+            return False
+
+        self.updatePixmap() # 초기 이미지 표시
+        return True
+
+    def updatePixmap(self):
+        """원본 Pixmap을 현재 레이블 크기에 맞게 스케일링하여 표시합니다."""
+        if not self._original_pixmap:
+            self.clear()
+            # 필요 시 기본 텍스트 설정
+            # self.setText("Image Area")
+            return
+
+        # 현재 레이블 크기 가져오기
+        label_size = self.size()
+        if label_size.width() <= 0 or label_size.height() <= 0:
+            # 위젯 크기가 유효하지 않으면 스케일링 건너뛰기
+             super().setPixmap(self._original_pixmap)
+             return
+
+        # 원본 비율 유지하며 스케일링
+        scaled_pixmap = self._original_pixmap.scaled(label_size, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        super().setPixmap(scaled_pixmap) # QLabel의 setPixmap 직접 호출
+
+    def resizeEvent(self, event: QResizeEvent):
+        """위젯 크기가 변경될 때 호출됩니다."""
+        self.updatePixmap() # 크기 변경 시 이미지 업데이트
+        super().resizeEvent(event)
+
+    def clear(self):
+        """이미지와 원본 Pixmap을 초기화합니다."""
+        self._original_pixmap = None
+        super().clear()
+        self.setText("Image Area") # 초기 텍스트 설정
+
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -28,44 +83,40 @@ class MainWindow(QMainWindow):
 
         # 왼쪽 영역 (원본 이미지)
         left_panel_layout = QVBoxLayout()
-        self.left_image_label = QLabel("Original Image Area") # 이미지 표시용 레이블
-        self.left_image_label.setAlignment(Qt.AlignCenter)
-        self.left_image_label.setFrameShape(QFrame.Box) # 테두리 추가
-        self.left_image_label.setMinimumSize(300, 200) # 최소 크기 설정
-        left_panel_layout.addWidget(self.left_image_label, 1) # Stretch factor 1 설정
-        self.left_info_label = QLabel("Image Info") # 정보 레이블
+        self.left_image_label = ImageLabel("Original Image Area") # ImageLabel 사용
+        self.left_image_label.setFrameShape(QFrame.Box)
+        # self.left_image_label.setMinimumSize(300, 200) # ImageLabel에서 설정
+        left_panel_layout.addWidget(self.left_image_label, 1)
+        self.left_info_label = QLabel("Image Info")
         self.left_info_label.setAlignment(Qt.AlignCenter)
-        left_panel_layout.addWidget(self.left_info_label) # Stretch factor 0 (기본값)
-
+        left_panel_layout.addWidget(self.left_info_label)
         left_button_layout = QHBoxLayout()
-        self.left_move_button = QPushButton("Move") # 버튼 객체 저장
-        self.left_browse_button = QPushButton("Browse") # 버튼 객체 저장
-        self.left_delete_button = QPushButton("Delete") # 버튼 객체 저장
+        self.left_move_button = QPushButton("Move")
+        self.left_browse_button = QPushButton("Browse")
+        self.left_delete_button = QPushButton("Delete")
         left_button_layout.addWidget(self.left_move_button)
         left_button_layout.addWidget(self.left_browse_button)
         left_button_layout.addWidget(self.left_delete_button)
-        left_panel_layout.addLayout(left_button_layout) # Stretch factor 0 (기본값)
+        left_panel_layout.addLayout(left_button_layout)
         image_comparison_layout.addLayout(left_panel_layout)
 
         # 오른쪽 영역 (중복 이미지)
         right_panel_layout = QVBoxLayout()
-        self.right_image_label = QLabel("Duplicate Image Area") # 이미지 표시용 레이블
-        self.right_image_label.setAlignment(Qt.AlignCenter)
-        self.right_image_label.setFrameShape(QFrame.Box) # 테두리 추가
-        self.right_image_label.setMinimumSize(300, 200) # 최소 크기 설정
-        right_panel_layout.addWidget(self.right_image_label, 1) # Stretch factor 1 설정
-        self.right_info_label = QLabel("Image Info") # 정보 레이블
+        self.right_image_label = ImageLabel("Duplicate Image Area") # ImageLabel 사용
+        self.right_image_label.setFrameShape(QFrame.Box)
+        # self.right_image_label.setMinimumSize(300, 200) # ImageLabel에서 설정
+        right_panel_layout.addWidget(self.right_image_label, 1)
+        self.right_info_label = QLabel("Image Info")
         self.right_info_label.setAlignment(Qt.AlignCenter)
-        right_panel_layout.addWidget(self.right_info_label) # Stretch factor 0 (기본값)
-
+        right_panel_layout.addWidget(self.right_info_label)
         right_button_layout = QHBoxLayout()
-        self.right_move_button = QPushButton("Move") # 버튼 객체 저장
-        self.right_browse_button = QPushButton("Browse") # 버튼 객체 저장
-        self.right_delete_button = QPushButton("Delete") # 버튼 객체 저장
+        self.right_move_button = QPushButton("Move")
+        self.right_browse_button = QPushButton("Browse")
+        self.right_delete_button = QPushButton("Delete")
         right_button_layout.addWidget(self.right_move_button)
         right_button_layout.addWidget(self.right_browse_button)
         right_button_layout.addWidget(self.right_delete_button)
-        right_panel_layout.addLayout(right_button_layout) # Stretch factor 0 (기본값)
+        right_panel_layout.addLayout(right_button_layout)
         image_comparison_layout.addLayout(right_panel_layout)
 
         # --- 하단 중복 목록 영역 ---
@@ -133,31 +184,35 @@ class MainWindow(QMainWindow):
             # QDesktopWidget 관련 오류 처리 (드물지만 발생 가능)
             print(f"Could not center window: {e}")
 
-    def _update_image_info(self, image_label: QLabel, info_label: QLabel, file_path: str):
-        """이미지 레이블과 정보 레이블을 업데이트하는 헬퍼 메서드"""
-        pixmap = QPixmap(file_path)
-        if not pixmap.isNull():
-            # 원본 비율 유지하며 레이블 크기에 맞게 스케일링
-            scaled_pixmap = pixmap.scaled(image_label.size(), Qt.KeepAspectRatio, Qt.SmoothTransformation)
-            image_label.setPixmap(scaled_pixmap) # 스케일된 이미지 설정
+    def _update_image_info(self, image_label: ImageLabel, info_label: QLabel, file_path: str):
+        """정보 레이블을 업데이트하고 ImageLabel에 Pixmap을 설정합니다."""
+        # ImageLabel에 Pixmap 설정 시도
+        success = image_label.setPixmapFromFile(file_path)
+
+        if success and image_label._original_pixmap: # 성공했고 원본 pixmap이 있으면 정보 업데이트
+            pixmap = image_label._original_pixmap # 저장된 원본 사용
             try:
                 file_size_kb = round(os.path.getsize(file_path) / 1024)
                 img_format = os.path.splitext(file_path)[1].upper()[1:]
-                filename = os.path.basename(file_path) # 파일 이름 추출
-                # 정보 텍스트에 파일 이름 추가 (줄바꿈 사용)
+                filename = os.path.basename(file_path)
+                # 원본 이미지 크기를 정보에 표시
                 info_text = f"{img_format} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB\n{filename}"
                 info_label.setText(info_text)
             except FileNotFoundError:
-                info_label.setText("File not found.")
-                image_label.setText("File Not Found")
+                info_label.setText(f"File info error: Not found\n{os.path.basename(file_path)}")
             except Exception as e:
                 print(f"Error getting file info: {e}")
-                info_label.setText("Error getting info.")
-                image_label.setText("Error Loading")
+                info_label.setText(f"Error getting info\n{os.path.basename(file_path)}")
+        elif file_path and os.path.exists(file_path):
+            # Pixmap 로드는 실패했지만 파일은 존재할 경우 (예: 지원하지 않는 형식)
+            info_label.setText(f"Cannot load image format\n{os.path.basename(file_path)}")
+        elif file_path:
+             # 파일 경로가 있지만 존재하지 않는 경우
+             info_label.setText(f"File not found\n{os.path.basename(file_path)}")
         else:
-            info_label.setText("Cannot load image.")
-            image_label.clear()
-            image_label.setText("Invalid Image File")
+            # 파일 경로 자체가 없는 경우 (초기화 등)
+            info_label.setText("Image Info")
+            # image_label.clear()는 setPixmapFromFile(None) 등에서 처리됨
 
     def browse_left_image(self):
         """왼쪽 'Browse' 버튼 클릭 시 파일 대화 상자를 열고 이미지를 로드합니다."""
@@ -245,7 +300,7 @@ class MainWindow(QMainWindow):
             current_duplicates = self.duplicate_table_model.rowCount()
             status_text = self.status_label.text().split("Duplicates found:")[0]
             self.status_label.setText(f"{status_text} Duplicates found: {current_duplicates}")
-            # 삭제/이동 후 이미지 패널 초기화
+            # 삭제/이동 후 이미지 패널 초기화 (ImageLabel의 clear 사용)
             self.right_image_label.clear()
             self.right_info_label.setText("Image Info")
             # 원본 이미지도 선택 해제된 것으로 간주하여 초기화 (선택적)
