@@ -9,12 +9,19 @@ from PyQt5.QtWidgets import (
     QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QStyle 제거
 )
 # from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QIcon # QIcon 제거
-from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent
+from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QImage # QImage 추가
 from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot # QThread, pyqtSlot 추가
-from image_processor import ScanWorker # ScanWorker 임포트
+from image_processor import ScanWorker, RAW_EXTENSIONS # ScanWorker, RAW_EXTENSIONS 임포트
 from typing import Optional, Dict, Any # Dict, Any 임포트
 # import send2trash # send2trash 다시 임포트
 from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
+from PIL import Image # Image만 임포트
+# from PIL.ImageQt import ImageQt5 # ImageQt 관련 임포트 제거
+# from PIL import Image, ImageQt # 이전 방식 주석 처리
+# from PIL.ImageQt import ImageQt # 이전 방식 주석 처리
+import rawpy # rawpy 임포트
+import numpy as np # numpy 임포트
+from log_setup import setup_logging # 로깅 설정 임포트
 
 # 스타일시트 정의
 QSS = """
@@ -74,9 +81,9 @@ QSplitter::handle:vertical {
     height: 5px;
 }
 
-ImageLabel {
-    background-color: #ffffff; /* 이미지 영역 흰색 배경 */
-    border: 1px dashed #b0b0b0; /* 점선 테두리 */
+QLabel#ImageLabel { /* ImageLabel 클래스에만 적용되도록 ID 선택자 또는 클래스 선택자 사용 고려 */
+    background-color: #f0f0f0;
+    border: 1px solid #cccccc;
     border-radius: 0px; /* 이미지 레이블은 각지게 */
 }
 """
@@ -90,20 +97,95 @@ class ImageLabel(QLabel):
         self.setMinimumSize(100, 100) # 최소 크기 설정 (예시)
 
     def setPixmapFromFile(self, file_path: str) -> bool:
-        """파일 경로로부터 Pixmap을 로드하고 원본을 저장합니다."""
+        """파일 경로로부터 Pixmap을 로드하고 원본을 저장합니다. RAW 및 TGA 지원 추가."""
         if not file_path or not os.path.exists(file_path):
             self._original_pixmap = None
             self.setText("File Not Found")
             return False
 
-        self._original_pixmap = QPixmap(file_path)
-        if self._original_pixmap.isNull():
-            self._original_pixmap = None
-            self.setText("Invalid Image File")
-            return False
+        pixmap = None
+        file_ext = os.path.splitext(file_path)[1].lower()
 
-        self.updatePixmap() # 초기 이미지 표시
-        return True
+        try:
+            # RAW 또는 TGA 파일 처리
+            if file_ext in RAW_EXTENSIONS or file_ext == '.tga':
+                img_pil = None
+                raw_obj = None
+                qimage = None # QImage 객체 초기화
+                try:
+                    if file_ext in RAW_EXTENSIONS:
+                        raw_obj = rawpy.imread(file_path)
+                        rgb_array = raw_obj.postprocess(use_camera_wb=True)
+                        img_pil = Image.fromarray(rgb_array)
+                    elif file_ext == '.tga':
+                        img_pil = Image.open(file_path)
+
+                    if img_pil:
+                        # PIL Image -> QImage 직접 변환
+                        img_pil.draft(None, None) # Ensure image data is loaded
+                        if img_pil.mode == "RGBA":
+                            bytes_per_line = img_pil.width * 4
+                            qimage = QImage(img_pil.tobytes("raw", "RGBA"), img_pil.width, img_pil.height, bytes_per_line, QImage.Format_RGBA8888)
+                        elif img_pil.mode == "RGB":
+                            bytes_per_line = img_pil.width * 3
+                            qimage = QImage(img_pil.tobytes("raw", "RGB"), img_pil.width, img_pil.height, bytes_per_line, QImage.Format_RGB888)
+                        else:
+                            # 다른 모드는 RGB로 변환 시도
+                            try:
+                                rgb_img = img_pil.convert("RGB")
+                                bytes_per_line = rgb_img.width * 3
+                                qimage = QImage(rgb_img.tobytes("raw", "RGB"), rgb_img.width, rgb_img.height, bytes_per_line, QImage.Format_RGB888)
+                                rgb_img.close() # 변환된 이미지 닫기
+                            except Exception as convert_err:
+                                print(f"Could not convert PIL image mode {img_pil.mode} to RGB for {file_path}: {convert_err}")
+                                self.setText(f"Unsupported Image Mode\n{os.path.basename(file_path)}")
+                                return False
+
+                        if qimage and not qimage.isNull():
+                            pixmap = QPixmap.fromImage(qimage)
+                        else:
+                             print(f"Failed to create QImage from PIL data for {file_path}")
+                             self.setText(f"QImage Creation Failed\n{os.path.basename(file_path)}")
+                             return False
+
+                except rawpy.LibRawIOError as e:
+                    print(f"rawpy I/O error for {file_path}: {e}")
+                    self.setText(f"RAW Load Error (I/O)\n{os.path.basename(file_path)}")
+                    return False
+                except Exception as e:
+                    print(f"Error processing {file_ext} file {file_path}: {e}")
+                    self.setText(f"Cannot Load Image\n{os.path.basename(file_path)}")
+                    return False
+                finally:
+                    if raw_obj:
+                        raw_obj.close()
+                    if img_pil and hasattr(img_pil, 'close'):
+                         try:
+                             img_pil.close()
+                         except Exception as close_err:
+                              print(f"Error closing PIL image {file_path}: {close_err}")
+
+            # 기타 지원 형식 (Qt/Pillow 기본 로더 사용)
+            else:
+                pixmap = QPixmap(file_path)
+
+            # Pixmap 유효성 검사 및 저장
+            if pixmap and not pixmap.isNull():
+                self._original_pixmap = pixmap
+                self.updatePixmap()
+                return True
+            else:
+                self._original_pixmap = None
+                # pixmap 생성 실패 메시지는 위에서 처리됨
+                if not (file_ext in RAW_EXTENSIONS or file_ext == '.tga'): # 일반 파일 로드 실패 시 메시지 설정
+                     self.setText(f"Invalid Image File\n{os.path.basename(file_path)}")
+                return False
+
+        except Exception as e:
+            print(f"Unexpected error in setPixmapFromFile for {file_path}: {e}")
+            self._original_pixmap = None
+            self.setText(f"Load Error\n{os.path.basename(file_path)}")
+            return False
 
     def updatePixmap(self):
         """원본 Pixmap을 현재 레이블 크기에 맞게 스케일링하여 표시합니다."""
@@ -268,7 +350,7 @@ class MainWindow(QMainWindow):
 
     def _update_image_info(self, image_label: ImageLabel, info_label: QLabel, file_path: str):
         """정보 레이블을 업데이트하고 ImageLabel에 Pixmap을 설정합니다."""
-        # ImageLabel에 Pixmap 설정 시도
+        # ImageLabel에 Pixmap 설정 시도 (이제 RAW/TGA 처리 가능)
         success = image_label.setPixmapFromFile(file_path)
 
         if success and image_label._original_pixmap: # 성공했고 원본 pixmap이 있으면 정보 업데이트
@@ -285,16 +367,16 @@ class MainWindow(QMainWindow):
             except Exception as e:
                 print(f"Error getting file info: {e}")
                 info_label.setText(f"Error getting info\n{os.path.basename(file_path)}")
-        elif file_path and os.path.exists(file_path):
-            # Pixmap 로드는 실패했지만 파일은 존재할 경우 (예: 지원하지 않는 형식)
-            info_label.setText(f"Cannot load image format\n{os.path.basename(file_path)}")
-        elif file_path:
-             # 파일 경로가 있지만 존재하지 않는 경우
+        # Pixmap 로드 실패 시 메시지 처리 (setPixmapFromFile 내부에서 처리되거나 여기서 추가 처리)
+        # elif file_path and not success: # 이미 setPixmapFromFile 에서 에러 텍스트 설정함
+        #     pass # 이미 ImageLabel에 오류 메시지 표시됨
+        elif file_path and not os.path.exists(file_path):
+             # 파일 경로가 있지만 존재하지 않는 경우 (이 경우는 setPixmapFromFile 시작 시 처리됨)
              info_label.setText(f"File not found\n{os.path.basename(file_path)}")
-        else:
+        elif not file_path:
             # 파일 경로 자체가 없는 경우 (초기화 등)
+            image_label.clear() # 명시적으로 clear 호출
             info_label.setText("Image Info")
-            # image_label.clear()는 setPixmapFromFile(None) 등에서 처리됨
 
     def browse_left_image(self):
         """왼쪽 'Browse' 버튼 클릭 시 파일 대화 상자를 열고 이미지를 로드합니다."""
@@ -349,20 +431,20 @@ class MainWindow(QMainWindow):
         QApplication.processEvents() # 메시지 즉시 업데이트
 
     @pyqtSlot(int)
-    def update_scan_progress(self, scanned_count: int):
+    def update_scan_progress(self, processed_count: int):
         """스캔 진행률 업데이트 슬롯"""
-        # 총 파일 수가 0보다 클 때만 진행률 표시
         if self.total_files_to_scan > 0:
-            self.status_label.setText(f"Scanning... {scanned_count} / {self.total_files_to_scan}")
+            # "processed" 명시
+            self.status_label.setText(f"Scanning... {processed_count} / {self.total_files_to_scan} files processed")
         else:
-            # 총 파일 수가 0이면 이전 방식 사용 (거의 발생하지 않음)
-            self.status_label.setText(f"Scanning... Files scanned: {scanned_count}")
+            self.status_label.setText(f"Scanning... Files processed: {processed_count}")
 
     @pyqtSlot(int, int, list)
-    def handle_scan_finished(self, total_files: int, scanned_count: int, duplicates: list):
+    def handle_scan_finished(self, total_files: int, processed_count: int, duplicates: list):
         """스캔 완료 처리 슬롯"""
         self.total_files_to_scan = total_files
-        self.status_label.setText(f"Scan complete. {scanned_count} / {total_files} files scanned. Duplicates found: {len(duplicates)}")
+        # "processed" 명시
+        self.status_label.setText(f"Scan complete. {processed_count} / {total_files} files processed. Duplicates found: {len(duplicates)}")
         # self.scan_folder_button.setEnabled(True) # cleanup_scan_thread에서 처리
 
         # 테이블 모델 업데이트 전, 유사도(similarity) 기준으로 내림차순 정렬
@@ -532,7 +614,11 @@ class MainWindow(QMainWindow):
             return None
 
 if __name__ == '__main__':
+    # DPI 스케일링 활성화 (QApplication 생성 전 호출)
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    setup_logging()
     app = QApplication(sys.argv)
+    app.setStyle('Fusion')
     window = MainWindow()
     window.show()
     sys.exit(app.exec_()) 
