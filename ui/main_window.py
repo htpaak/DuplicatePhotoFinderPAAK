@@ -88,10 +88,17 @@ class MainWindow(QMainWindow):
         self.duplicate_table_model = QStandardItemModel()
         self.duplicate_table_model.setHorizontalHeaderLabels(["Original Image", "Duplicate Image", "Similarity (%)"])
         self.duplicate_table_view.setModel(self.duplicate_table_model)
-        self.duplicate_table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
-        self.duplicate_table_view.setEditTriggers(QTableView.NoEditTriggers) # 편집 불가 설정
-        self.duplicate_table_view.setSelectionBehavior(QTableView.SelectRows) # 행 단위 선택
-        self.duplicate_table_view.setSelectionMode(QTableView.SingleSelection) # 단일 선택
+        # self.duplicate_table_view.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) # 전체 스트레치 제거
+        self.duplicate_table_view.setEditTriggers(QTableView.NoEditTriggers)
+        self.duplicate_table_view.setSelectionBehavior(QTableView.SelectRows)
+        self.duplicate_table_view.setSelectionMode(QTableView.SingleSelection)
+
+        # 열 너비 개별 설정
+        header = self.duplicate_table_view.horizontalHeader()
+        header.setSectionResizeMode(0, QHeaderView.Stretch) # Original Image 열 늘리기
+        header.setSectionResizeMode(1, QHeaderView.Stretch) # Duplicate Image 열 늘리기
+        header.setSectionResizeMode(2, QHeaderView.ResizeToContents) # Similarity 열 내용에 맞게 조정
+
         duplicate_list_layout.addWidget(self.duplicate_table_view)
 
         # 스플리터로 영역 나누기
