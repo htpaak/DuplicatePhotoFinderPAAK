@@ -278,8 +278,6 @@ class MainWindow(QMainWindow):
         self.previous_selection_index: Optional[int] = None # 프록시 행 인덱스 저장용
         self.last_acted_representative_path: Optional[str] = None
         self.last_acted_member_path: Optional[str] = None
-        self._restore_snapshot_rep: Optional[str] = None
-        self._restore_snapshot_members: Optional[List[Tuple[str, int, int]]] = None # (path, similarity, rank) 저장
 
         # --- 초기화 시 경로 로깅 제거 ---
         # print(f"[MainWindow Init] Current Working Directory: {os.getcwd()}")
@@ -585,8 +583,8 @@ class MainWindow(QMainWindow):
         self.duplicate_groups_data.clear()
         for group_id, data in temp_group_data.items():
              self.group_representatives[group_id] = data['rep']
-             # 최종 저장 형식: (path, original_similarity, rank)
-             self.duplicate_groups_data[group_id] = [(m['path'], m['similarity'], m['rank']) for m in data['members']]
+             # 최종 저장 형식: (path, percentage_similarity, rank)
+             self.duplicate_groups_data[group_id] = [(m['path'], m['percentage'], m['rank']) for m in data['members']]
         # --- Rank 계산 로직 끝 --- 
 
         # 그룹 데이터를 내부 구조에 저장하고 테이블 모델 채우기 (Rank 사용)
@@ -598,7 +596,7 @@ class MainWindow(QMainWindow):
         for rep_path, mem_path, percent_sim, group_id, original_sim in all_duplicate_pairs:
              rank = -1
              # 해당 멤버의 Rank 찾기 (이미 계산됨)
-             for m_path, o_sim, r in self.duplicate_groups_data.get(group_id, []):
+             for m_path, percent_sim_stored, r in self.duplicate_groups_data.get(group_id, []):
                   if m_path == mem_path:
                        rank = r
                        break
@@ -792,14 +790,14 @@ class MainWindow(QMainWindow):
             # --- 복원을 위한 그룹 데이터 스냅샷 저장 --- 
             try:
                 import copy # copy 모듈 임포트
-                self._restore_snapshot_rep = self.group_representatives.get(group_id)
+                restore_snapshot_rep = self.group_representatives.get(group_id)
                 # list of tuples -> deepcopy 필요
-                self._restore_snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
-                print(f"[Delete Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(self._restore_snapshot_rep) if self._restore_snapshot_rep else 'None'}, Members: {len(self._restore_snapshot_members)}")
+                restore_snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
+                print(f"[Delete Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(restore_snapshot_rep) if restore_snapshot_rep else 'None'}, Members: {len(restore_snapshot_members)}")
             except Exception as snap_err:
                 print(f"[Delete Error] Failed to create restore snapshot: {snap_err}")
-                self._restore_snapshot_rep = None
-                self._restore_snapshot_members = None
+                restore_snapshot_rep = None
+                restore_snapshot_members = None
                 # 스냅샷 실패 시 진행 중단 (선택적이지만 안전함)
                 QMessageBox.critical(self, "Error", "Failed to prepare for undo. Cannot proceed.")
                 self.previous_selection_index = None
@@ -825,7 +823,7 @@ class MainWindow(QMainWindow):
 
             # 1. 파일 삭제 시도 (UndoManager 사용)
             print("[Delete Debug] Attempting to delete file via UndoManager...") 
-            if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path_for_undo, all_original_paths_for_undo):
+            if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path_for_undo, all_original_paths_for_undo, restore_snapshot_rep, restore_snapshot_members):
                 print(f"[Delete Debug] File sent to trash (via UndoManager): {image_path_to_delete}")
                 
                 # 2. 내부 그룹 데이터에서 파일 제거
@@ -939,38 +937,15 @@ class MainWindow(QMainWindow):
         # *** 복원 시 정확한 행 식별을 위한 정보 저장 ***
         self.last_acted_representative_path = original_representative_path
         self.last_acted_member_path = original_member_path
-        print(f"[Delete Debug] Stored last acted paths and group.")
-        
-        target_label = self.left_image_label if target == 'original' else self.right_image_label
-        image_path_to_delete = original_representative_path if target == 'original' else original_member_path
-        print(f"[Delete Debug] Determined path to delete: {image_path_to_delete}")
-        # --- 저장 끝 ---
 
-        # --- 복원을 위한 그룹 데이터 스냅샷 저장 (이동 시에도 동일하게 필요) --- 
-        try:
-            import copy 
-            self._restore_snapshot_rep = self.group_representatives.get(group_id)
-            self._restore_snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
-            print(f"[Move Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(self._restore_snapshot_rep) if self._restore_snapshot_rep else 'None'}, Members: {len(self._restore_snapshot_members)}")
-        except Exception as snap_err:
-            print(f"[Move Error] Failed to create restore snapshot: {snap_err}")
-            self._restore_snapshot_rep = None
-            self._restore_snapshot_members = None
-            QMessageBox.critical(self, "Error", "Failed to prepare for undo. Cannot proceed.")
-            self.previous_selection_index = None
-            self.last_acted_group_id = None
-            return
-        # --- 스냅샷 저장 끝 ---
+        # 임시: 실제 이동 로직 추가 필요
+        # self.undo_manager.move_file(image_path_to_move, destination, group_id, original_rep, original_members, snapshot_rep, snapshot_members)
 
-        print(f"Move requested for: {image_path_to_delete} (Group: {group_id}) - Not implemented yet.")
-        QMessageBox.information(self, "Info", "Group-based move is not yet implemented.")
         # 이동 미구현이므로 상태 초기화 (스냅샷 포함)
         self.previous_selection_index = None
-        self.last_acted_group_id = None 
+        self.last_acted_group_id = None
         self.last_acted_representative_path = None
         self.last_acted_member_path = None
-        self._restore_snapshot_rep = None
-        self._restore_snapshot_members = None
 
     def update_undo_button_state(self, enabled: bool):
         """Undo 버튼의 활성화 상태를 업데이트하는 슬롯"""
@@ -1109,32 +1084,22 @@ class MainWindow(QMainWindow):
         print(f"[MainWindow] Handling group state restore for group {group_id} (Action: {action_type})")
 
         if action_type == UndoManager.ACTION_DELETE or action_type == UndoManager.ACTION_MOVE:
-            # --- UndoManager 정보 대신 저장된 스냅샷 사용 --- 
-            # original_member_paths = action_details.get('member_paths') # 사용 안 함
-            # original_representative = action_details.get('representative_path') # 사용 안 함
+            # --- action_details 에서 스냅샷 데이터 추출 --- 
+            restore_snapshot_rep = action_details.get('snapshot_rep')
+            restore_snapshot_members = action_details.get('snapshot_members')
             
-            # if original_member_paths is None or original_representative is None:
-            #      print(f"[Restore Error] Missing member or representative paths for group {group_id}.")
-            #      return
-            
-            if self._restore_snapshot_rep is None or self._restore_snapshot_members is None:
-                print(f"[Restore Error] Restore snapshot data is missing for group {group_id}. Cannot restore accurately.")
+            if restore_snapshot_rep is None or restore_snapshot_members is None:
+                print(f"[Restore Error] Restore snapshot data is missing in action_details for group {group_id}. Cannot restore accurately.")
                 # 스냅샷 없으면 복원 중단 또는 기본 처리 (예: 첫 행 선택)
                 # 안전하게 중단하고 메시지 표시
                 QMessageBox.warning(self, "Restore Warning", "Could not restore exact previous state due to missing data.")
-                # 임시 변수 초기화
-                self._restore_snapshot_rep = None
-                self._restore_snapshot_members = None
                 return 
                  
-            # 저장된 스냅샷으로 그룹 데이터 복원 (deepcopy된 리스트 재사용)
-            self.group_representatives[group_id] = self._restore_snapshot_rep
-            self.duplicate_groups_data[group_id] = self._restore_snapshot_members
-            print(f"[MainWindow] Restored group {group_id} from snapshot. Rep: {os.path.basename(self._restore_snapshot_rep)}, Members: {len(self._restore_snapshot_members)}")
+            # 스냅샷으로 그룹 데이터 복원
+            self.group_representatives[group_id] = restore_snapshot_rep
+            self.duplicate_groups_data[group_id] = restore_snapshot_members # 이미 deepcopy된 상태
+            print(f"[MainWindow] Restored group {group_id} from snapshot. Rep: {os.path.basename(restore_snapshot_rep)}, Members: {len(restore_snapshot_members)}")
             
-            # 사용 완료된 스냅샷 데이터 초기화
-            self._restore_snapshot_rep = None
-            self._restore_snapshot_members = None
             # --- 스냅샷 사용 끝 ---
 
             # 테이블 업데이트 (소스 모델의 맨 끝에 행 추가됨)

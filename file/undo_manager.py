@@ -15,7 +15,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox, QApplication, QTableView, QLabel
 from PyQt5.QtCore import QObject, pyqtSignal, Qt
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any, Optional, List, Tuple
 import send2trash
 
 # Windows 환경에서 사용할 winshell 패키지
@@ -65,8 +65,8 @@ class UndoManager(QObject):
             # QMessageBox.information(self.main_window, "Info", message)
             print(f"[UndoManager Info] {message}") # 콘솔 로그로 대체
     
-    def delete_file(self, deleted_path: str, group_id: str, representative_path: str, member_paths: List[str]) -> bool:
-        """파일을 휴지통으로 보내고 작업을 추적합니다. (그룹 정보 사용)"""
+    def delete_file(self, deleted_path: str, group_id: str, representative_path: str, member_paths: List[str], snapshot_rep: Optional[str], snapshot_members: Optional[List[Tuple[str, int, int]]]) -> bool:
+        """파일을 휴지통으로 보내고 작업을 추적합니다. (그룹 정보 및 스냅샷 사용)"""
         success = False
         try:
             normalized_path = os.path.normpath(deleted_path)
@@ -85,7 +85,9 @@ class UndoManager(QObject):
                 'group_id': group_id,
                 'representative_path': representative_path, # 삭제 시점의 대표
                 'member_paths': list(member_paths), # 삭제 시점의 멤버 목록 (복사본)
-                'deleted_path': deleted_path # 실제 삭제된 파일 경로
+                'deleted_path': deleted_path, # 실제 삭제된 파일 경로
+                'snapshot_rep': snapshot_rep,
+                'snapshot_members': snapshot_members
             }
             self.actions.append(action_details)
             self.undo_status_changed.emit(True)
@@ -94,8 +96,8 @@ class UndoManager(QObject):
             #     success = False # 작업 추적 실패
         return success
 
-    def move_file(self, moved_from_path: str, destination_folder: str, group_id: str, representative_path: str, member_paths: List[str]) -> bool:
-        """파일을 이동하고 작업을 추적합니다. (그룹 정보 사용)"""
+    def move_file(self, moved_from_path: str, destination_folder: str, group_id: str, representative_path: str, member_paths: List[str], snapshot_rep: Optional[str], snapshot_members: Optional[List[Tuple[str, int, int]]]) -> bool:
+        """파일을 이동하고 작업을 추적합니다. (그룹 정보 및 스냅샷 사용)"""
         success = False
         destination_path = ""
         try:
@@ -123,7 +125,9 @@ class UndoManager(QObject):
                 'representative_path': representative_path,
                 'member_paths': list(member_paths),
                 'moved_from': moved_from_path,
-                'moved_to': destination_path
+                'moved_to': destination_path,
+                'snapshot_rep': snapshot_rep,
+                'snapshot_members': snapshot_members
             }
             self.actions.append(action_details)
             self.undo_status_changed.emit(True)
