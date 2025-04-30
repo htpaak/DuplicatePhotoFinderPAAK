@@ -46,65 +46,100 @@ ICON_PATH = os.path.join(project_root, "assets", "icon.ico")
 # 스타일시트 정의
 QSS = """
 QMainWindow {
-    background-color: #f0f0f0; /* 밝은 회색 배경 */
+    background-color: #f8f8f8; /* 더 밝고 부드러운 배경 */
 }
 
 QFrame {
-    border: 1px solid #d0d0d0; /* 연한 테두리 */
-    border-radius: 5px;
+    border: 1px solid #e0e0e0; /* 더 연한 테두리 */
+    border-radius: 8px; /* 더 둥근 모서리 */
 }
 
 QLabel {
-    font-size: 10pt; /* 기본 폰트 크기 */
+    font-size: 10pt;
     padding: 5px;
+    color: #555; /* 약간 더 부드러운 텍스트 색상 */
 }
 
 QPushButton {
-    background-color: #e0e0e0; /* 버튼 배경 */
-    border: 1px solid #c0c0c0;
-    padding: 6px 12px;
-    border-radius: 4px;
+    background-color: #e0f2f1; /* 연한 민트 배경 */
+    border: 1px solid #b2dfdb; /* 조금 더 진한 민트 테두리 */
+    padding: 8px 15px; /* 패딩 증가 */
+    border-radius: 8px; /* 더 둥근 모서리 */
     font-size: 10pt;
+    color: #00796b; /* 진한 틸(Teal) 색상 텍스트 */
+    font-weight: bold; /* 글자 두껍게 */
 }
 
 QPushButton:hover {
-    background-color: #d5d5d5;
+    background-color: #b2dfdb; /* 호버 시 조금 더 진하게 */
 }
 
 QPushButton:pressed {
-    background-color: #c8c8c8;
+    background-color: #a0cac5; /* 클릭 시 조금 더 어둡게 */
 }
 
 QPushButton:disabled {
     background-color: #f5f5f5;
-    color: #a0a0a0;
+    color: #bdbdbd; /* 비활성화 시 색상 조정 */
+    border-color: #e0e0e0;
 }
 
 QTableView {
-    border: 1px solid #d0d0d0;
-    gridline-color: #e0e0e0;
+    border: 1px solid #e0e0e0; /* 프레임과 통일 */
+    gridline-color: #f0f0f0; /* 격자선 더 연하게 */
     font-size: 9pt;
+    selection-background-color: #b2dfdb; /* 선택 배경색 (민트) */
+    selection-color: #004d40; /* 선택 텍스트 색 (어두운 틸) */
 }
 
 QHeaderView::section {
-    background-color: #e8e8e8;
-    padding: 4px;
-    border: 1px solid #d0d0d0;
+    background-color: #f5f5f5; /* 헤더 배경 (부드러운 회색) */
+    padding: 5px;
+    border: 1px solid #e0e0e0; /* 헤더 테두리 */
     font-size: 9pt;
+    font-weight: bold;
+    color: #616161; /* 헤더 텍스트 색상 (진한 회색) */
 }
 
 QSplitter::handle {
-    background-color: #d0d0d0;
+    background-color: #e0e0e0; /* 스플리터 핸들 색상 */
 }
 
 QSplitter::handle:vertical {
-    height: 5px;
+    height: 6px; /* 스플리터 핸들 두께 */
 }
 
-QLabel#ImageLabel { /* ImageLabel 클래스에만 적용되도록 ID 선택자 또는 클래스 선택자 사용 고려 */
-    background-color: #f0f0f0;
-    border: 1px solid #cccccc;
-    border-radius: 0px; /* 이미지 레이블은 각지게 */
+/* 특정 위젯에 대한 추가 스타일 */
+QLabel#ImageLabel {
+    background-color: white;
+    border: 1px solid #e0e0e0;
+    border-radius: 8px; /* 이미지 레이블도 둥글게 */
+}
+
+QLabel#status_label { /* 상태 레이블 스타일 */
+    color: #777;
+    font-size: 9pt;
+}
+
+/* Undo 버튼 스타일 재정의 */
+QPushButton#undo_button {
+    background-color: #eeeeee; /* Undo 버튼 배경 (밝은 회색) */
+    border: 1px solid #bdbdbd; /* Undo 버튼 테두리 */
+    color: #424242; /* Undo 버튼 텍스트 (어두운 회색) */
+}
+
+QPushButton#undo_button:hover {
+    background-color: #e0e0e0;
+}
+
+QPushButton#undo_button:pressed {
+    background-color: #bdbdbd;
+}
+
+QPushButton#undo_button:disabled {
+    background-color: #f5f5f5;
+    color: #bdbdbd;
+    border-color: #e0e0e0;
 }
 """
 
@@ -349,6 +384,7 @@ class MainWindow(QMainWindow):
         self.scan_folder_button = QPushButton("Scan Folder") # 버튼 참조 저장
         self.status_label = QLabel("Files scanned: 0 Duplicates found: 0")
         self.undo_button = QPushButton("Undo")
+        self.undo_button.setObjectName("undo_button") # 객체 이름 설정
         self.undo_button.setEnabled(self.undo_manager.can_undo())
         scan_status_layout.addWidget(self.scan_folder_button)
         scan_status_layout.addWidget(self.status_label, 1)
