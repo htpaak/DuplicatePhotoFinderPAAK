@@ -15,8 +15,8 @@ from PyQt5.QtWidgets import (
     QHeaderView, QFileDialog, QMessageBox, QDesktopWidget # QStyle 제거
 )
 from PyQt5.QtGui import QPixmap, QStandardItemModel, QStandardItem, QResizeEvent, QImage, QIcon # QIcon 추가
-from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot # QThread, pyqtSlot 추가
-from image_processor import ScanWorker, RAW_EXTENSIONS # ScanWorker, RAW_EXTENSIONS 임포트
+from PyQt5.QtCore import Qt, QModelIndex, QSize, QThread, pyqtSlot, QSortFilterProxyModel # QSortFilterProxyModel 추가
+from image_processor import ScanWorker, RAW_EXTENSIONS, DuplicateGroupWithSimilarity
 from typing import Optional, Dict, Any, List, Tuple # Tuple 임포트 추가
 # import send2trash # send2trash 다시 임포트
 from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
@@ -237,6 +237,33 @@ class ImageLabel(QLabel):
         super().clear()
         self.setText("Image Area") # 초기 텍스트 설정
 
+# --- 사용자 정의 정렬 프록시 모델 ---
+class SimilaritySortProxyModel(QSortFilterProxyModel):
+    def lessThan(self, left: QModelIndex, right: QModelIndex) -> bool:
+        # --- 'Rank' 열 (인덱스 0) 또는 'Similarity' 열 (인덱스 3) 정렬 처리 --- 
+        column = left.column()
+        if column == 0: # 'Rank' 열
+            left_data = self.sourceModel().data(left, Qt.UserRole + 6) # Rank 데이터는 Role +6
+            right_data = self.sourceModel().data(right, Qt.UserRole + 6)
+            # 'Rank' 열은 오름차순 (작은 번호 먼저)
+            sort_order_multiplier = 1 
+        elif column == 3: # 'Similarity' 열
+            left_data = self.sourceModel().data(left, Qt.UserRole + 4)
+            right_data = self.sourceModel().data(right, Qt.UserRole + 4)
+            # 'Similarity' 열은 내림차순 (높은 퍼센트 먼저)
+            sort_order_multiplier = -1 
+        else:
+            # 다른 열은 기본 정렬
+            return super().lessThan(left, right)
+            
+        # 데이터 유효성 검사 및 숫자 비교 (기존 로직 유지)
+        try:
+            if left_data is None and right_data is None: return False
+            if left_data is None: return True 
+            if right_data is None: return False 
+            return sort_order_multiplier * float(left_data) < sort_order_multiplier * float(right_data)
+        except (ValueError, TypeError):
+            return super().lessThan(left, right)
 
 class MainWindow(QMainWindow):
     def __init__(self):
@@ -245,11 +272,14 @@ class MainWindow(QMainWindow):
         self.scan_thread: Optional[QThread] = None
         self.scan_worker: Optional[ScanWorker] = None
         self.total_files_to_scan = 0 # 총 스캔할 파일 수 저장 변수
-        # 그룹 데이터를 저장할 변수 추가
-        self.duplicate_groups_data: Dict[str, List[str]] = {} # {group_id: [file_path1, file_path2, ...]}
         self.group_representatives: Dict[str, str] = {} # {group_id: representative_file_path}
+        self.duplicate_groups_data: Dict[str, List[Tuple[str, int]]] = {} # {group_id: [(member_path, similarity), ...]}
         self.last_acted_group_id: Optional[str] = None # 마지막으로 액션이 적용된 그룹 ID
-        self.previous_selection_index: Optional[int] = None # 액션 전 마지막 선택 인덱스
+        self.previous_selection_index: Optional[int] = None # 프록시 행 인덱스 저장용
+        self.last_acted_representative_path: Optional[str] = None
+        self.last_acted_member_path: Optional[str] = None
+        self._restore_snapshot_rep: Optional[str] = None
+        self._restore_snapshot_members: Optional[List[Tuple[str, int, int]]] = None # (path, similarity, rank) 저장
 
         # --- 초기화 시 경로 로깅 제거 ---
         # print(f"[MainWindow Init] Current Working Directory: {os.getcwd()}")
@@ -333,23 +363,34 @@ class MainWindow(QMainWindow):
 
         # 중복 목록 테이블 뷰
         self.duplicate_table_view = QTableView()
-        self.duplicate_table_model = QStandardItemModel()
-        # 테이블 헤더 변경: Similarity -> Group ID, 열 추가 (Group Member)
-        self.duplicate_table_model.setHorizontalHeaderLabels(["Representative", "Group Member", "Group ID"])
-        self.duplicate_table_view.setModel(self.duplicate_table_model)
+        self.duplicate_table_model = QStandardItemModel() # 원본 데이터 모델
+        self.duplicate_table_proxy_model = SimilaritySortProxyModel() # 프록시 모델 생성
+        self.duplicate_table_proxy_model.setSourceModel(self.duplicate_table_model) # 소스 모델 연결
+
+        # --- 테이블 헤더 '#' -> 'Rank', 초기 정렬 Rank 기준 ---
+        self.duplicate_table_model.setHorizontalHeaderLabels(["Rank", "Representative", "Group Member", "Similarity", "Group ID"])
+        
+        # 테이블 뷰에는 *프록시* 모델 설정
+        self.duplicate_table_view.setModel(self.duplicate_table_proxy_model) 
         self.duplicate_table_view.setEditTriggers(QTableView.NoEditTriggers)
         self.duplicate_table_view.setSelectionBehavior(QTableView.SelectRows)
         self.duplicate_table_view.setSelectionMode(QTableView.SingleSelection)
-        self.duplicate_table_view.setSortingEnabled(True) # 정렬 활성화
+        self.duplicate_table_view.setSortingEnabled(True) # 테이블 뷰 정렬 활성화
 
-        # 열 너비 조정 (Group ID 숨김)
+        # 열 너비 조정 (인덱스 조정)
         header = self.duplicate_table_view.horizontalHeader()
-        header.setSectionResizeMode(0, QHeaderView.Stretch)
-        header.setSectionResizeMode(1, QHeaderView.Stretch)
-        header.setSectionResizeMode(2, QHeaderView.ResizeToContents)
-        self.duplicate_table_view.setColumnHidden(2, True) # Group ID 열 숨기기
-        # 초기 정렬 설정 (대표 이미지 경로 오름차순)
+        header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # 'Rank' 열
+        header.setSectionResizeMode(1, QHeaderView.Stretch) # Representative
+        header.setSectionResizeMode(2, QHeaderView.Stretch) # Group Member
+        header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Similarity
+        header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Group ID
+        self.duplicate_table_view.setColumnHidden(4, True) # Group ID 열 숨기기 (인덱스 4)
+        
+        # 초기 정렬 설정 ('Rank' 오름차순)
         self.duplicate_table_view.sortByColumn(0, Qt.AscendingOrder)
+
+        # 수직 헤더 숨기기
+        self.duplicate_table_view.verticalHeader().setVisible(False)
 
         duplicate_list_layout.addWidget(self.duplicate_table_view)
 
@@ -483,41 +524,114 @@ class MainWindow(QMainWindow):
             self.status_label.setText(f"Scanning... Files processed: {processed_count}")
 
     @pyqtSlot(int, int, list)
-    def handle_scan_finished(self, total_files: int, processed_count: int, duplicate_groups: List[List[str]]):
-        """스캔 완료 처리 슬롯 (그룹 기반)"""
-        self.total_files_to_scan = total_files
-        total_duplicates_count = sum(len(group) -1 for group in duplicate_groups)
-        self.status_label.setText(f"Scan complete. {processed_count} / {total_files} files processed. Duplicates found: {total_duplicates_count} in {len(duplicate_groups)} groups")
+    def handle_scan_finished(self, total_files: int, processed_count: int, duplicate_groups_with_similarity: DuplicateGroupWithSimilarity):
+        """스캔 완료 시그널을 처리하여 결과를 테이블에 업데이트합니다."""
+        # --- 수신된 데이터 로깅 제거 ---
+        # print("--- [Debug] Received data in handle_scan_finished ---")
+        # print(f"Total Files: {total_files}, Processed: {processed_count}")
+        # print("Duplicate Groups Data:")
+        # if not duplicate_groups_with_similarity:
+        #     print("  No duplicates found.")
+        # else:
+        #     for rep, members in duplicate_groups_with_similarity:
+        #         print(f"  Rep: {os.path.basename(rep)}")
+        #         print(f"    Members: {[(os.path.basename(p), s) for p, s in members]}")
+        # print("--- [Debug] End of received data ---\n")
+        # --- 로깅 제거 끝 ---
+
+        # 스캔 완료 상태 업데이트
+        self.status_label.setText(f"Scan complete. Found {len(duplicate_groups_with_similarity)} duplicate groups in {processed_count}/{total_files} files.")
 
         # 내부 데이터 초기화
         self.duplicate_groups_data.clear()
         self.group_representatives.clear()
         self.duplicate_table_model.removeRows(0, self.duplicate_table_model.rowCount())
 
-        # 그룹 데이터를 내부 구조에 저장하고 테이블 모델 채우기
-        for group in duplicate_groups:
-            if not group: continue
-            group_id = str(uuid.uuid4())
-            representative = group[0]
-            self.duplicate_groups_data[group_id] = list(group)
-            self.group_representatives[group_id] = representative
+        # --- 유사도 기반 Rank 계산 로직 --- 
+        all_duplicate_pairs = []
+        temp_group_data = {}
+        # 1. 모든 중복 쌍과 유사도(%) 수집
+        for representative_path, members_with_similarity in duplicate_groups_with_similarity:
+            if not members_with_similarity: continue
+            group_id = str(uuid.uuid4()) # 임시 ID 부여 (나중에 테이블 채울 때 사용)
+            temp_group_data[group_id] = {'rep': representative_path, 'members': []}
+            for member_path, similarity in members_with_similarity:
+                hash_bits = 64
+                percentage_similarity = max(0, round((1 - similarity / hash_bits) * 100))
+                # 대표/멤버 경로, 유사도%, 임시 그룹 ID 저장
+                all_duplicate_pairs.append((representative_path, member_path, percentage_similarity, group_id, similarity))
+                # 임시 그룹 데이터에도 멤버 추가 (나중에 Rank 와 함께 저장하기 위함)
+                temp_group_data[group_id]['members'].append({'path': member_path, 'similarity': similarity, 'percentage': percentage_similarity, 'rank': -1}) # Rank 초기값 -1
+                
+        # 2. 유사도(%) 기준 내림차순 정렬
+        all_duplicate_pairs.sort(key=lambda item: item[2], reverse=True)
+        
+        # 3. Rank 부여 및 최종 데이터 구조 생성
+        ranked_group_data = {} # {group_id: [(member_path, similarity, rank), ...]}
+        current_rank = 1
+        for rep_path, mem_path, percent_sim, group_id, original_sim in all_duplicate_pairs:
+            if group_id not in ranked_group_data:
+                ranked_group_data[group_id] = []
+            ranked_group_data[group_id].append((mem_path, original_sim, current_rank))
+            # 임시 그룹 데이터에도 Rank 업데이트 (스냅샷용)
+            for member_info in temp_group_data[group_id]['members']:
+                if member_info['path'] == mem_path:
+                    member_info['rank'] = current_rank
+                    break
+            current_rank += 1
+            
+        # 4. 내부 데이터 구조 업데이트 (대표 경로, 멤버+유사도+Rank)
+        self.group_representatives.clear()
+        self.duplicate_groups_data.clear()
+        for group_id, data in temp_group_data.items():
+             self.group_representatives[group_id] = data['rep']
+             # 최종 저장 형식: (path, original_similarity, rank)
+             self.duplicate_groups_data[group_id] = [(m['path'], m['similarity'], m['rank']) for m in data['members']]
+        # --- Rank 계산 로직 끝 --- 
 
-            # 테이블 모델에 행 추가 (대표-멤버 쌍)
-            for member in group:
-                if member == representative:
-                    continue
-                item_representative = QStandardItem(representative)
-                item_member = QStandardItem(member)
-                item_group_id = QStandardItem(group_id)
-                # 읽기 전용 플래그 설정
-                item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
-                item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
-                item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
-                self.duplicate_table_model.appendRow([item_representative, item_member, item_group_id])
+        # 그룹 데이터를 내부 구조에 저장하고 테이블 모델 채우기 (Rank 사용)
+        # item_sequence_number = 1 # 시퀀스 번호 대신 Rank 사용
+        # for representative_path, members_with_similarity in duplicate_groups_with_similarity: # 기존 루프 대신 ranked_group_data 사용
+        
+        # --- 테이블 채우기 로직 수정 (Rank 기반) ---
+        # 정렬된 Rank 순서대로 테이블에 추가 (all_duplicate_pairs 사용)
+        for rep_path, mem_path, percent_sim, group_id, original_sim in all_duplicate_pairs:
+             rank = -1
+             # 해당 멤버의 Rank 찾기 (이미 계산됨)
+             for m_path, o_sim, r in self.duplicate_groups_data.get(group_id, []):
+                  if m_path == mem_path:
+                       rank = r
+                       break
+             if rank == -1: continue # 오류 방지
 
-        if duplicate_groups:
+             # Rank 열 아이템 생성
+             item_rank = QStandardItem(str(rank))
+             item_rank.setTextAlignment(Qt.AlignCenter)
+             item_rank.setData(rank, Qt.UserRole + 6) # Rank 정렬용 데이터 (Role +6)
+             item_rank.setFlags(item_rank.flags() & ~Qt.ItemIsEditable)
+             
+             item_representative = QStandardItem(rep_path)
+             item_member = QStandardItem(mem_path)
+             
+             similarity_text = f"{percent_sim}%"
+             item_similarity = QStandardItem(similarity_text)
+             item_similarity.setData(percent_sim, Qt.UserRole + 4)
+             item_similarity.setTextAlignment(Qt.AlignCenter)
+             item_group_id = QStandardItem(group_id)
+             
+             item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
+             item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+             item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
+             item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
+             
+             # 'Rank' 열 아이템 맨 앞에 추가
+             self.duplicate_table_model.appendRow([item_rank, item_representative, item_member, item_similarity, item_group_id])
+        # --- 테이블 채우기 로직 수정 끝 ---
+
+        if self.duplicate_table_model.rowCount() > 0:
+            # 초기 정렬이 Rank 기준이므로 첫 행 선택
             self.duplicate_table_view.selectRow(0)
-            self.on_table_item_clicked(self.duplicate_table_model.index(0, 0))
+            self.on_table_item_clicked(self.duplicate_table_proxy_model.index(0, 0))
         else:
             self.left_image_label.clear()
             self.left_info_label.setText("Image Info")
@@ -560,25 +674,28 @@ class MainWindow(QMainWindow):
         """테이블 뷰의 항목 클릭 시 상단 이미지 패널을 업데이트합니다."""
         if not index.isValid():
             return
+            
+        # --- 프록시 모델 인덱스를 소스 모델 인덱스로 변환 --- 
+        source_index = self.duplicate_table_proxy_model.mapToSource(index)
+        row = source_index.row()
+        # --- 변환 끝 ---
 
-        row = index.row()
-        representative_path_item = self.duplicate_table_model.item(row, 0) # 대표 경로
-        member_path_item = self.duplicate_table_model.item(row, 1) # 멤버 경로
-        group_id_item = self.duplicate_table_model.item(row, 2) # 그룹 ID
+        # --- 소스 모델에서 데이터 가져오기 --- 
+        representative_path_item = self.duplicate_table_model.item(row, 1) 
+        member_path_item = self.duplicate_table_model.item(row, 2) 
+        group_id_item = self.duplicate_table_model.item(row, 4) 
+        # --- 가져오기 끝 ---
 
         if representative_path_item and member_path_item and group_id_item:
             group_id = group_id_item.text()
-            # 현재 그룹의 대표 이미지 (나중에는 동적으로 바뀔 수 있음)
             current_representative = self.group_representatives.get(group_id)
             selected_member = member_path_item.text()
 
             if current_representative:
-                 # 왼쪽: 현재 그룹 대표, 오른쪽: 선택된 멤버
                  self._update_image_info(self.left_image_label, self.left_info_label, current_representative)
                  self._update_image_info(self.right_image_label, self.right_info_label, selected_member)
             else:
                  print(f"Error: Representative not found for group {group_id}")
-                 # 오류 처리: 패널 초기화 또는 메시지 표시
                  self.left_image_label.clear()
                  self.left_info_label.setText("Error: Group data missing")
                  self.right_image_label.clear()
@@ -589,11 +706,18 @@ class MainWindow(QMainWindow):
         selected_indexes = self.duplicate_table_view.selectedIndexes()
         if not selected_indexes:
             return None
-        selected_row = selected_indexes[0].row()
+        
+        # --- 뷰 인덱스 -> 프록시 인덱스 -> 소스 인덱스 --- 
+        proxy_index = selected_indexes[0]
+        source_index = self.duplicate_table_proxy_model.mapToSource(proxy_index)
+        selected_row = source_index.row()
+        # --- 변환 끝 ---
 
-        representative_item = self.duplicate_table_model.item(selected_row, 0)
-        member_item = self.duplicate_table_model.item(selected_row, 1)
-        group_id_item = self.duplicate_table_model.item(selected_row, 2)
+        # --- 소스 모델에서 데이터 가져오기 --- 
+        representative_item = self.duplicate_table_model.item(selected_row, 1)
+        member_item = self.duplicate_table_model.item(selected_row, 2)
+        group_id_item = self.duplicate_table_model.item(selected_row, 4) 
+        # --- 가져오기 끝 ---
 
         if not (representative_item and member_item and group_id_item):
              return None
@@ -604,144 +728,319 @@ class MainWindow(QMainWindow):
 
         # 어떤 버튼(왼쪽/오른쪽)이 눌렸는지 판단하여 해당 이미지 경로 반환
         if target_label is self.left_image_label:
-             # 왼쪽 패널은 항상 현재 그룹 대표를 보여줌
              current_representative = self.group_representatives.get(group_id)
-             if current_representative: # 대표가 유효하면 반환
+             if current_representative: 
                   return current_representative, group_id
-             else: # 그룹 데이터 오류 시
+             else: 
                   return None
         elif target_label is self.right_image_label:
-             # 오른쪽 패널은 테이블에서 선택된 멤버를 보여줌
              return member_path, group_id
         else:
-            return None # 예상치 못한 경우
+            return None
 
     def delete_selected_image(self, target: str):
         """선택된 이미지를 휴지통으로 보내고 그룹 데이터를 업데이트합니다."""
-        # 액션 전 선택 상태 저장
-        current_selection = self.duplicate_table_view.selectedIndexes()
-        if current_selection:
-            self.previous_selection_index = current_selection[0].row()
-        else:
-            self.previous_selection_index = None # 선택된 항목 없이 삭제 시도
-            # QMessageBox.warning(self, "Warning", "Please select an image pair from the list.") # 아래에서 이미 처리됨
-            # return
+        print(f"[Delete Entry] delete_selected_image called with target: {target}") 
+        # --- 액션 전 상태 저장 (프록시 인덱스 및 경로) --- 
+        try:
+            print("[Delete Debug] Getting selected indexes...") # 추가 로그 1
+            selected_proxy_indexes = self.duplicate_table_view.selectedIndexes()
+            print("[Delete Debug] Got selected indexes.") # 추가 로그 2
+            if not selected_proxy_indexes:
+                print("[Delete Debug] No selection found.") # 추가 로그 3
+                QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
+                return
+                
+            selected_proxy_index = selected_proxy_indexes[0]
+            print(f"[Delete Debug] Got proxy index: row={selected_proxy_index.row()}, col={selected_proxy_index.column()}") # 추가 로그 4
+            source_index = self.duplicate_table_proxy_model.mapToSource(selected_proxy_index)
+            print(f"[Delete Debug] Mapped to source index: row={source_index.row()}, col={source_index.column()}") # 추가 로그 5
+            selected_row = source_index.row() # 소스 모델 행 (데이터 접근용)
+            self.previous_selection_index = selected_proxy_index.row() # *** 프록시 행 인덱스 저장 ***
+            print(f"[Delete Debug] Stored previous proxy index: {self.previous_selection_index}") # 추가 로그 6
 
-        target_label = self.left_image_label if target == 'original' else self.right_image_label
-        selected_data = self._get_selected_item_data(target_label)
+            representative_item = self.duplicate_table_model.item(selected_row, 1) 
+            print("[Delete Debug] Got representative item.") # 추가 로그 7
+            member_item = self.duplicate_table_model.item(selected_row, 2) 
+            print("[Delete Debug] Got member item.") # 추가 로그 8
+            group_id_item = self.duplicate_table_model.item(selected_row, 4) 
+            print("[Delete Debug] Got group_id item.") # 추가 로그 9
 
-        if not selected_data:
-            QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
-            self.previous_selection_index = None # 선택된 데이터 없으면 초기화
-            return
+            if not (representative_item and member_item and group_id_item):
+                print("[Delete Debug] Failed to get one or more items.") # 추가 로그 10
+                QMessageBox.warning(self, "Warning", "Could not get item data.")
+                self.previous_selection_index = None # 저장 실패 시 초기화
+                return
+                
+            # 액션 대상 경로와 그룹 ID 가져오기
+            original_representative_path = representative_item.text() 
+            print(f"[Delete Debug] Got rep path: {original_representative_path}") # 추가 로그 11
+            original_member_path = member_item.text() 
+            print(f"[Delete Debug] Got mem path: {original_member_path}") # 추가 로그 12
+            group_id = group_id_item.text() 
+            print(f"[Delete Debug] Got group_id: {group_id}") # 추가 로그 13
+            self.last_acted_group_id = group_id # 복원 시 그룹 식별용
+            self.last_acted_representative_path = original_representative_path
+            self.last_acted_member_path = original_member_path
+            print(f"[Delete Debug] Stored last acted paths and group.") # 추가 로그 14
+            
+            target_label = self.left_image_label if target == 'original' else self.right_image_label
+            image_path_to_delete = original_representative_path if target == 'original' else original_member_path
+            print(f"[Delete Debug] Determined path to delete: {image_path_to_delete}") # 추가 로그 15
+            # --- 저장 끝 ---
 
-        image_path_to_delete, group_id = selected_data
-        self.last_acted_group_id = group_id # 액션 대상 그룹 ID 저장
+            # --- 복원을 위한 그룹 데이터 스냅샷 저장 --- 
+            try:
+                import copy # copy 모듈 임포트
+                self._restore_snapshot_rep = self.group_representatives.get(group_id)
+                # list of tuples -> deepcopy 필요
+                self._restore_snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
+                print(f"[Delete Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(self._restore_snapshot_rep) if self._restore_snapshot_rep else 'None'}, Members: {len(self._restore_snapshot_members)}")
+            except Exception as snap_err:
+                print(f"[Delete Error] Failed to create restore snapshot: {snap_err}")
+                self._restore_snapshot_rep = None
+                self._restore_snapshot_members = None
+                # 스냅샷 실패 시 진행 중단 (선택적이지만 안전함)
+                QMessageBox.critical(self, "Error", "Failed to prepare for undo. Cannot proceed.")
+                self.previous_selection_index = None
+                self.last_acted_group_id = None
+                return
+            # --- 스냅샷 저장 끝 ---
+            
+            if group_id not in self.duplicate_groups_data or group_id not in self.group_representatives:
+                print(f"[Delete Debug] Group data inconsistent for group_id: {group_id}")
+                QMessageBox.critical(self, "Error", "Group data not found. Cannot process delete.")
+                self.last_acted_group_id = None
+                self.previous_selection_index = None
+                return
+            print("[Delete Debug] Group data consistency check passed.") # 추가 로그 17
 
-        if group_id not in self.duplicate_groups_data or group_id not in self.group_representatives:
-            QMessageBox.critical(self, "Error", "Group data not found. Cannot process delete.")
-            self.last_acted_group_id = None # 오류 시 초기화
-            self.previous_selection_index = None
-            return
+            # 실행 취소 정보 준비
+            representative_path_for_undo = self.group_representatives[group_id] 
+            print("[Delete Debug] Got representative for undo.") # 추가 로그 18
+            member_paths_for_undo = [path for path, _, _ in self.duplicate_groups_data[group_id]] 
+            print("[Delete Debug] Got member paths for undo.") # 추가 로그 19
+            all_original_paths_for_undo = [representative_path_for_undo] + member_paths_for_undo
+            print("[Delete Debug] Prepared all paths for undo.") # 추가 로그 20
 
-        # 실행 취소 정보 준비
-        representative_path = self.group_representatives[group_id]
-        member_paths = list(self.duplicate_groups_data[group_id]) # 복사본 전달
+            # 1. 파일 삭제 시도 (UndoManager 사용)
+            print("[Delete Debug] Attempting to delete file via UndoManager...") 
+            if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path_for_undo, all_original_paths_for_undo):
+                print(f"[Delete Debug] File sent to trash (via UndoManager): {image_path_to_delete}")
+                
+                # 2. 내부 그룹 데이터에서 파일 제거
+                print("[Delete Debug] Removing file from internal group data...")
+                current_group_tuples = self.duplicate_groups_data[group_id]
+                print(f"[Delete Debug] current_group_tuples before removal (len={len(current_group_tuples)}): {[(os.path.basename(p), s, sq) for p, s, sq in current_group_tuples[:5]]}...") # 일부만 로깅
+                found_and_removed = False
+                # --- 멤버 데이터 구조 변경 반영: (path, sim, rank) --- 
+                for i, (path, _, _) in enumerate(current_group_tuples):
+                    if path == image_path_to_delete:
+                        print(f"[Delete Debug] Found item to remove at index {i}")
+                        del current_group_tuples[i]
+                        found_and_removed = True
+                        print(f"[Delete Debug] Removed {os.path.basename(image_path_to_delete)} from group {group_id}. Remaining members: {len(current_group_tuples)}")
+                        break
+                # --- 수정 끝 ---
+                if not found_and_removed:
+                     print(f"[Delete Debug] Warning: {image_path_to_delete} not found in group data {group_id} upon delete.")
+                print("[Delete Debug] Finished removing from internal group data.")
 
-        # 1. 파일 삭제 시도 (UndoManager 사용 - 그룹 정보 전달)
-        if self.undo_manager.delete_file(image_path_to_delete, group_id, representative_path, member_paths):
-            print(f"File sent to trash (via UndoManager): {image_path_to_delete}")
-
-            # 2. 내부 그룹 데이터에서 파일 제거
-            current_group = self.duplicate_groups_data[group_id]
-            if image_path_to_delete in current_group:
-                current_group.remove(image_path_to_delete)
-                print(f"Removed {os.path.basename(image_path_to_delete)} from group {group_id}. Remaining: {len(current_group)}")
-            else:
-                print(f"Warning: {image_path_to_delete} not found in group data {group_id} upon delete.")
-
-            # 3. 대표 이미지 처리
-            current_representative = self.group_representatives.get(group_id)
-            if image_path_to_delete == current_representative:
-                if current_group:
-                    new_representative = current_group[0]
-                    self.group_representatives[group_id] = new_representative
-                    print(f"Group {group_id}: New representative set to {os.path.basename(new_representative)}")
+                # 3. 대표 이미지 처리
+                print("[Delete Debug] Checking if representative needs update...")
+                current_representative = self.group_representatives.get(group_id)
+                if image_path_to_delete == current_representative:
+                    print("[Delete Debug] Deleted item was the representative.")
+                    if current_group_tuples: 
+                        print("[Delete Debug] Setting new representative...")
+                        # --- 새 대표 설정 및 멤버 목록에서 제거 (데이터 구조 변경 반영) ---
+                        new_representative_path, _, _ = current_group_tuples[0] 
+                        self.group_representatives[group_id] = new_representative_path
+                        del current_group_tuples[0]
+                        print(f"[Delete Debug] Group {group_id}: New representative set to {os.path.basename(new_representative_path)}")
+                        # --- 수정 끝 ---
+                        if not current_group_tuples:
+                             print("[Delete Debug] Group became empty after setting new representative.")
+                             pass # 아래에서 그룹 제거 로직 처리
+                    else: 
+                        print(f"[Delete Debug] Group {group_id} is now empty after deleting the only representative, removing group data.")
+                        if group_id in self.duplicate_groups_data: del self.duplicate_groups_data[group_id]
+                        if group_id in self.group_representatives: del self.group_representatives[group_id]
+                        print("[Delete Debug] Group data removed.")
                 else:
-                    del self.duplicate_groups_data[group_id]
-                    if group_id in self.group_representatives:
-                         del self.group_representatives[group_id]
-                    print(f"Group {group_id} is now empty and removed.")
-
-            # 4 & 5. 테이블 업데이트
-            if group_id in self.duplicate_groups_data:
-                 self._update_table_for_group(group_id)
-            else:
-                 rows_to_remove = []
-                 for row in range(self.duplicate_table_model.rowCount()):
-                      item = self.duplicate_table_model.item(row, 2)
-                      if item and item.text() == group_id:
-                           rows_to_remove.append(row)
-                 for row in sorted(rows_to_remove, reverse=True):
-                      self.duplicate_table_model.removeRow(row)
-
-            # 6. UI 상태 업데이트 (선택 및 패널)
-            self._update_ui_after_action()
+                    print("[Delete Debug] Deleted item was not the representative.")
+                    
+                # 4 & 5. 테이블 업데이트
+                if group_id in self.duplicate_groups_data and self.duplicate_groups_data[group_id]: # 그룹이 존재하고 멤버가 남아있을 때만 업데이트
+                     print(f"[Delete Debug] Calling _update_table_for_group for group {group_id}...")
+                     self._update_table_for_group(group_id)
+                     print(f"[Delete Debug] Finished _update_table_for_group for group {group_id}.")
+                elif group_id not in self.duplicate_groups_data or not self.duplicate_groups_data.get(group_id): # 그룹 자체가 삭제되었거나 비었을 때
+                     # 그룹 자체가 삭제된 경우 테이블에서 해당 그룹 ID 행 모두 제거
+                     print(f"[Delete Debug] Group {group_id} removed or empty, removing rows from table model...")
+                     rows_to_remove = []
+                     for row in range(self.duplicate_table_model.rowCount()):
+                          # --- Group ID 열 인덱스 변경 (4 -> 5) : 주의! _update_table_for_group 내부와 일치해야 함 ---
+                          # -> _update_table_for_group 내부에서 그룹 ID 인덱스는 4가 맞음. 여기서도 4 사용.
+                          item = self.duplicate_table_model.item(row, 4) # Group ID
+                          if item and item.text() == group_id:
+                               print(f"[Delete Debug] Found row {row} to remove for group {group_id}")
+                               rows_to_remove.append(row)
+                     # --- 수정 끝 ---
+                     if rows_to_remove:
+                         print(f"[Delete Debug] Removing rows: {rows_to_remove}")
+                         for row in sorted(rows_to_remove, reverse=True):
+                              self.duplicate_table_model.removeRow(row)
+                         print("[Delete Debug] Rows removed from table model.")
+                     else:
+                         print("[Delete Debug] No rows found to remove for the deleted/empty group.")
+                      
+                # 6. UI 상태 업데이트
+                print("[Delete Debug] Calling _update_ui_after_action...")
+                self._update_ui_after_action()
+                print("[Delete Debug] Delete action finished successfully.")
+        except Exception as e:
+            print(f"[Delete Error] Unhandled exception in delete setup: {e}")
+            import traceback
+            traceback.print_exc() # 오류 스택 트레이스 출력
+            QMessageBox.critical(self, "Critical Error", f"An unexpected error occurred during delete setup: {e}")
+            # 필요한 상태 초기화
+            self.previous_selection_index = None
+            self.last_acted_group_id = None
+            self.last_acted_representative_path = None
+            self.last_acted_member_path = None
 
     def move_selected_image(self, target: str):
-        """선택된 이미지를 이동하고 그룹 데이터를 업데이트합니다. (구현 필요)"""
-        target_label = self.left_image_label if target == 'original' else self.right_image_label
-        selected_data = self._get_selected_item_data(target_label)
-
-        if not selected_data:
+        """선택된 이미지를 이동하고 그룹 데이터를 업데이트합니다. (구현 필요) """
+        # --- 액션 전 상태 저장 (프록시 인덱스 및 경로) --- 
+        selected_proxy_indexes = self.duplicate_table_view.selectedIndexes()
+        if not selected_proxy_indexes:
             QMessageBox.warning(self, "Warning", "Please select an image pair from the list.")
             return
+            
+        selected_proxy_index = selected_proxy_indexes[0]
+        source_index = self.duplicate_table_proxy_model.mapToSource(selected_proxy_index)
+        selected_row = source_index.row() # 소스 모델 행
+        self.previous_selection_index = selected_proxy_index.row() # *** 프록시 행 인덱스 저장 ***
 
-        image_path_to_move, group_id = selected_data
-        self.last_acted_group_id = group_id # 액션 대상 그룹 ID 저장 (이동 구현 시 필요)
-        print(f"Move requested for: {image_path_to_move} (Group: {group_id})")
+        representative_item = self.duplicate_table_model.item(selected_row, 1)
+        member_item = self.duplicate_table_model.item(selected_row, 2)
+        group_id_item = self.duplicate_table_model.item(selected_row, 4) 
+
+        if not (representative_item and member_item and group_id_item):
+            QMessageBox.warning(self, "Warning", "Could not get item data.")
+            self.previous_selection_index = None 
+            return
+            
+        original_representative_path = representative_item.text()
+        original_member_path = member_item.text()
+        group_id = group_id_item.text()
+        self.last_acted_group_id = group_id 
+        # *** 복원 시 정확한 행 식별을 위한 정보 저장 ***
+        self.last_acted_representative_path = original_representative_path
+        self.last_acted_member_path = original_member_path
+        print(f"[Delete Debug] Stored last acted paths and group.")
+        
+        target_label = self.left_image_label if target == 'original' else self.right_image_label
+        image_path_to_delete = original_representative_path if target == 'original' else original_member_path
+        print(f"[Delete Debug] Determined path to delete: {image_path_to_delete}")
+        # --- 저장 끝 ---
+
+        # --- 복원을 위한 그룹 데이터 스냅샷 저장 (이동 시에도 동일하게 필요) --- 
+        try:
+            import copy 
+            self._restore_snapshot_rep = self.group_representatives.get(group_id)
+            self._restore_snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
+            print(f"[Move Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(self._restore_snapshot_rep) if self._restore_snapshot_rep else 'None'}, Members: {len(self._restore_snapshot_members)}")
+        except Exception as snap_err:
+            print(f"[Move Error] Failed to create restore snapshot: {snap_err}")
+            self._restore_snapshot_rep = None
+            self._restore_snapshot_members = None
+            QMessageBox.critical(self, "Error", "Failed to prepare for undo. Cannot proceed.")
+            self.previous_selection_index = None
+            self.last_acted_group_id = None
+            return
+        # --- 스냅샷 저장 끝 ---
+
+        print(f"Move requested for: {image_path_to_delete} (Group: {group_id}) - Not implemented yet.")
         QMessageBox.information(self, "Info", "Group-based move is not yet implemented.")
-        self.last_acted_group_id = None # 아직 미구현이므로 초기화
-        # TODO: 그룹 기반 이동 로직 구현 (delete와 유사)
+        # 이동 미구현이므로 상태 초기화 (스냅샷 포함)
+        self.previous_selection_index = None
+        self.last_acted_group_id = None 
+        self.last_acted_representative_path = None
+        self.last_acted_member_path = None
+        self._restore_snapshot_rep = None
+        self._restore_snapshot_members = None
 
     def update_undo_button_state(self, enabled: bool):
         """Undo 버튼의 활성화 상태를 업데이트하는 슬롯"""
         self.undo_button.setEnabled(enabled)
 
     def _update_table_for_group(self, group_id: str):
-        """주어진 group_id에 해당하는 테이블 행들을 업데이트합니다."""
-        # 1. 해당 group_id의 모든 행 제거
+        """주어진 group_id에 해당하는 테이블 행들을 업데이트합니다 (Rank 및 유사도 포함)."""
+        print(f"[UpdateTable Debug] Updating table for group_id: {group_id}") # 로그 1
+        # 1. 해당 group_id의 모든 행 제거 (소스 모델 기준)
         rows_to_remove = []
+        print(f"[UpdateTable Debug] Searching rows to remove...") # 로그 2
         for row in range(self.duplicate_table_model.rowCount()):
-            item = self.duplicate_table_model.item(row, 2) # Group ID 열
+            # --- Group ID 열 인덱스 변경 (4 -> 5) : 주의! 이 함수 외부와 일치해야 함 ---
+            # -> 그룹 ID는 이제 4번 인덱스가 맞음 (0:#, 1:Rep, 2:Mem, 3:Sim, 4:GroupID)
+            item = self.duplicate_table_model.item(row, 4) 
             if item and item.text() == group_id:
                 rows_to_remove.append(row)
+        print(f"[UpdateTable Debug] Found rows to remove: {rows_to_remove}") # 로그 3
 
-        # 행은 뒤에서부터 제거해야 인덱스 오류 방지
-        for row in sorted(rows_to_remove, reverse=True):
-            self.duplicate_table_model.removeRow(row)
+        if rows_to_remove:
+            print(f"[UpdateTable Debug] Removing rows: {rows_to_remove}") # 로그 4
+            for row in sorted(rows_to_remove, reverse=True):
+                self.duplicate_table_model.removeRow(row)
+            print(f"[UpdateTable Debug] Finished removing rows.") # 로그 5
+        else:
+            print(f"[UpdateTable Debug] No existing rows found for group {group_id}.")
 
-        # 2. 업데이트된 그룹 정보로 새 행 추가 (대표 자신과의 쌍은 제외)
-        if group_id in self.duplicate_groups_data and len(self.duplicate_groups_data[group_id]) > 0: # 멤버가 1명 이상인 경우만 처리
+        # 2. 업데이트된 그룹 정보로 새 행 추가
+        if group_id in self.duplicate_groups_data:
             representative = self.group_representatives.get(group_id)
-            members = self.duplicate_groups_data[group_id]
-            if representative: # 대표가 존재해야 함
-                for member in members:
-                    # 대표 이미지와 멤버 이미지가 다른 경우에만 행 추가
-                    if representative == member:
-                        continue
-
+            # --- Rank 포함된 멤버 데이터 가져오기 --- 
+            members_data = self.duplicate_groups_data[group_id]
+            print(f"[UpdateTable Debug] Preparing to add new rows. Rep: {os.path.basename(representative) if representative else 'None'}, Members count: {len(members_data)}") # 로그 6
+            
+            if representative and members_data: 
+                # --- Rank 데이터 언패킹 및 사용 --- 
+                for member_path, similarity, rank in members_data:
+                    print(f"[UpdateTable Debug] Processing member: {os.path.basename(member_path)}, Seq: {rank}") # 로그 7
+                    if representative == member_path: continue 
+                        
+                    # 'Rank' 열 아이템 생성
+                    item_rank = QStandardItem(str(rank))
+                    item_rank.setTextAlignment(Qt.AlignCenter)
+                    item_rank.setData(rank, Qt.UserRole + 6) # Rank 정렬용 데이터 (Role +6)
+                    item_rank.setFlags(item_rank.flags() & ~Qt.ItemIsEditable)
+                    
                     item_representative = QStandardItem(representative)
-                    item_member = QStandardItem(member)
+                    item_member = QStandardItem(member_path)
+                    
+                    similarity_text = f"{similarity}%"
+                    item_similarity = QStandardItem(similarity_text)
+                    item_similarity.setData(similarity, Qt.UserRole + 4)
+                    item_similarity.setTextAlignment(Qt.AlignCenter)
                     item_group_id = QStandardItem(group_id)
-                    # 읽기 전용 플래그 설정
+                    
                     item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
                     item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+                    item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
                     item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
-                    self.duplicate_table_model.appendRow([item_representative, item_member, item_group_id])
-            else:
-                print(f"[Update Table Warning] Representative not found for group {group_id} during update.")
-        # else: 그룹이 삭제되었거나 멤버가 0명 또는 1명만 남은 경우 (쌍을 만들 수 없음) 테이블에 추가할 필요 없음
+                    
+                    # 'Rank' 열 아이템 맨 앞에 추가하여 행 추가
+                    row_items = [item_rank, item_representative, item_member, item_similarity, item_group_id]
+                    print(f"[UpdateTable Debug] Appending row for seq {rank}...") # 로그 8
+                    self.duplicate_table_model.appendRow(row_items)
+                    print(f"[UpdateTable Debug] Row appended for seq {rank}.") # 로그 9
+            else: 
+                print(f"[UpdateTable Debug] No representative or member data found for group {group_id}, not adding rows.") # 로그 10
+        else:
+            print(f"[UpdateTable Debug] Group {group_id} not found in duplicate_groups_data, not adding rows.") # 로그 11
+        print(f"[UpdateTable Debug] Finished updating table for group_id: {group_id}") # 로그 12
 
     def _update_ui_after_action(self):
         """테이블 및 이미지 패널 상태를 업데이트합니다.
@@ -751,107 +1050,155 @@ class MainWindow(QMainWindow):
         그룹이 사라진 경우 이전 선택 위치 또는 마지막 항목을 선택합니다.
         """
         next_row_to_select = -1
-        new_row_count = self.duplicate_table_model.rowCount()
+        # --- 행 수와 인덱스는 프록시 모델 기준 --- 
+        new_proxy_row_count = self.duplicate_table_proxy_model.rowCount()
 
-        if new_row_count > 0:
-            # 1. 마지막 액션 그룹 ID로 행 찾기 시도
+        if new_proxy_row_count > 0:
             if self.last_acted_group_id:
-                for row in range(new_row_count):
-                    item = self.duplicate_table_model.item(row, 2) # Group ID 열
+                for proxy_row in range(new_proxy_row_count):
+                    # 프록시 인덱스 -> 소스 인덱스
+                    source_index_group_id = self.duplicate_table_proxy_model.mapToSource(
+                        self.duplicate_table_proxy_model.index(proxy_row, 4)
+                    )
+                    # 소스 모델에서 그룹 ID 아이템 가져오기
+                    item = self.duplicate_table_model.item(source_index_group_id.row(), 4) 
                     if item and item.text() == self.last_acted_group_id:
-                        next_row_to_select = row
-                        break # 첫 번째 일치하는 행 찾음
-
-            # 2. 액션 그룹을 찾지 못했거나 특정 그룹 액션이 아니었던 경우
+                        next_row_to_select = proxy_row # 선택할 행은 프록시 행 인덱스
+                        break
             if next_row_to_select == -1:
-                if self.previous_selection_index is not None:
-                    # 이전 선택 인덱스를 사용하되, 새 테이블 크기를 넘지 않도록 함
-                    next_row_to_select = min(self.previous_selection_index, new_row_count - 1)
-                else:
-                    # 이전 선택도 없으면 첫 번째 행 선택
-                    next_row_to_select = 0
-
-            # 3. 유효한 행 인덱스를 선택하고 UI 업데이트
-            if 0 <= next_row_to_select < new_row_count:
-                self.duplicate_table_view.selectRow(next_row_to_select)
-                self.on_table_item_clicked(self.duplicate_table_model.index(next_row_to_select, 0))
-            else:
-                # 모든 행이 사라진 후 여기까지 오지는 않음 (위의 new_row_count > 0 에서 처리)
-                # 만약의 경우 패널 초기화 (이론상 도달하기 어려움)
-                self.left_image_label.clear()
-                self.left_info_label.setText("Image Info")
-                self.right_image_label.clear()
-                self.right_info_label.setText("Image Info")
+                 if self.previous_selection_index is not None:
+                     # 이전 선택 인덱스도 프록시 기준이었어야 함 (아래 수정 필요)
+                     # 우선 현재 프록시 행 수 내에서 유효한 값으로 조정
+                     next_row_to_select = min(self.previous_selection_index, new_proxy_row_count - 1)
+                 else:
+                     next_row_to_select = 0
+                     
+            if 0 <= next_row_to_select < new_proxy_row_count:
+                 # 선택 및 클릭 이벤트 발생은 프록시 인덱스 사용
+                 self.duplicate_table_view.selectRow(next_row_to_select)
+                 self.on_table_item_clicked(self.duplicate_table_proxy_model.index(next_row_to_select, 0))
         else:
-            # 테이블이 비었으면 패널 초기화
             self.left_image_label.clear()
             self.left_info_label.setText("Image Info")
             self.right_image_label.clear()
             self.right_info_label.setText("Image Info")
-
-        # 사용된 상태 변수 초기화
+            
         self.last_acted_group_id = None
-        self.previous_selection_index = None
+        # --- previous_selection_index 를 프록시 모델 기준으로 저장하도록 수정 필요 --- 
+        # (delete/move/restore 함수에서 self.duplicate_table_view.selectedIndexes()[0].row() 사용)
+        self.previous_selection_index = None 
+        # --- 수정 필요 끝 ---
 
     def _handle_group_state_restore(self, action_details: dict):
         """UndoManager로부터 그룹 상태 복원 요청을 처리합니다."""
-        # 액션 전 선택 상태 저장 (실행 취소 시에도 필요)
+        # 액션 전 선택 상태 저장 (실행 취소 시에도 프록시 인덱스 사용)
         current_selection = self.duplicate_table_view.selectedIndexes()
         if current_selection:
-            self.previous_selection_index = current_selection[0].row()
+            self.previous_selection_index = current_selection[0].row() # 프록시 행 저장
         else:
             self.previous_selection_index = None
 
         action_type = action_details.get('type')
         group_id = action_details.get('group_id')
-        self.last_acted_group_id = group_id # 복원 대상 그룹 ID 저장
+        self.last_acted_group_id = group_id 
 
         if not group_id:
-            print("[Restore Error] Group ID not found in action details.")
-            self.last_acted_group_id = None
-            return
+             print("[Restore Error] Group ID not found in action details.")
+             return
 
         print(f"[MainWindow] Handling group state restore for group {group_id} (Action: {action_type})")
 
-        # 삭제 또는 이동 취소 시 그룹 데이터 복원
         if action_type == UndoManager.ACTION_DELETE or action_type == UndoManager.ACTION_MOVE:
-            original_members = action_details.get('member_paths')
-            original_representative = action_details.get('representative_path')
+            # --- UndoManager 정보 대신 저장된 스냅샷 사용 --- 
+            # original_member_paths = action_details.get('member_paths') # 사용 안 함
+            # original_representative = action_details.get('representative_path') # 사용 안 함
+            
+            # if original_member_paths is None or original_representative is None:
+            #      print(f"[Restore Error] Missing member or representative paths for group {group_id}.")
+            #      return
+            
+            if self._restore_snapshot_rep is None or self._restore_snapshot_members is None:
+                print(f"[Restore Error] Restore snapshot data is missing for group {group_id}. Cannot restore accurately.")
+                # 스냅샷 없으면 복원 중단 또는 기본 처리 (예: 첫 행 선택)
+                # 안전하게 중단하고 메시지 표시
+                QMessageBox.warning(self, "Restore Warning", "Could not restore exact previous state due to missing data.")
+                # 임시 변수 초기화
+                self._restore_snapshot_rep = None
+                self._restore_snapshot_members = None
+                return 
+                 
+            # 저장된 스냅샷으로 그룹 데이터 복원 (deepcopy된 리스트 재사용)
+            self.group_representatives[group_id] = self._restore_snapshot_rep
+            self.duplicate_groups_data[group_id] = self._restore_snapshot_members
+            print(f"[MainWindow] Restored group {group_id} from snapshot. Rep: {os.path.basename(self._restore_snapshot_rep)}, Members: {len(self._restore_snapshot_members)}")
+            
+            # 사용 완료된 스냅샷 데이터 초기화
+            self._restore_snapshot_rep = None
+            self._restore_snapshot_members = None
+            # --- 스냅샷 사용 끝 ---
 
-            if original_members is None or original_representative is None:
-                 print(f"[Restore Error] Missing member or representative paths for group {group_id}.")
-                 return
-
-            # 그룹 데이터와 대표 정보 복원
-            self.duplicate_groups_data[group_id] = list(original_members)
-            self.group_representatives[group_id] = original_representative
-            print(f"[MainWindow] Restored group {group_id}: Rep={os.path.basename(original_representative)}, Members={len(original_members)}")
-
-            # 테이블 업데이트
+            # 테이블 업데이트 (소스 모델의 맨 끝에 행 추가됨)
             self._update_table_for_group(group_id)
-
-            # 테이블 뷰 다시 정렬 (현재 정렬 기준 유지)
+            print("[Restore Debug] _update_table_for_group finished.") # 추가 로그 1
+            
+            # --- 정렬 먼저 적용 후, 복원된 항목 찾아 선택 --- 
+            # 1. 기존 정렬 상태 다시 적용
+            print("[Restore Debug] Getting current sort order...") # 추가 로그 2
             current_sort_column = self.duplicate_table_view.horizontalHeader().sortIndicatorSection()
             current_sort_order = self.duplicate_table_view.horizontalHeader().sortIndicatorOrder()
-            self.duplicate_table_view.sortByColumn(current_sort_column, current_sort_order)
-
-            # UI 상태 업데이트 (선택 및 이미지 패널)
-            # 복원된 그룹의 첫 번째 쌍을 선택하도록 시도
-            restored_row_index = -1
-            for row in range(self.duplicate_table_model.rowCount()):
-                 item = self.duplicate_table_model.item(row, 2) # Group ID
-                 if item and item.text() == group_id:
-                      restored_row_index = row
-                      break
-
-            if restored_row_index != -1:
-                 self.duplicate_table_view.selectRow(restored_row_index)
-                 self.on_table_item_clicked(self.duplicate_table_model.index(restored_row_index, 0))
-            else:
-                 # 복원 후 테이블에 해당 그룹 ID 행이 없으면 UI 초기화 (이론상 발생 X)
-                 self._update_ui_after_action() # 일반 업데이트 호출
+            print(f"[Restore Debug] Current sort: col={current_sort_column}, order={current_sort_order}") # 추가 로그 3
+            print("[Restore Debug] Re-applying sort to proxy model...") # 추가 로그 4
+            self.duplicate_table_proxy_model.sort(current_sort_column, current_sort_order)
+            print("[Restore Debug] Sort re-applied.") # 추가 로그 5
+            
+            # 2. 정렬된 테이블에서 복원된 *정확한 항목* 찾기
+            print("[Restore Debug] Getting target paths for search...") # 추가 로그 6
+            target_rep_path = self.last_acted_representative_path
+            target_mem_path = self.last_acted_member_path
+            print(f"[Restore Debug] Target paths: Rep={os.path.basename(target_rep_path) if target_rep_path else 'None'}, Mem={os.path.basename(target_mem_path) if target_mem_path else 'None'}") # 추가 로그 7
+            
+            restored_proxy_row_index = -1
+            if target_rep_path and target_mem_path: 
+                print("[Restore Debug] Starting search loop for exact match...")
+                for proxy_row in range(self.duplicate_table_proxy_model.rowCount()):
+                     print(f"[Restore Loop Debug] Processing proxy_row: {proxy_row}") # 루프 시작 로그
+                     # --- 열 인덱스 변경: Representative(1), Member(2) ---
+                     proxy_index_rep = self.duplicate_table_proxy_model.index(proxy_row, 1)
+                     print(f"[Restore Loop Debug] Got proxy_index_rep.") # 로그 A
+                     source_index_rep = self.duplicate_table_proxy_model.mapToSource(proxy_index_rep)
+                     print(f"[Restore Loop Debug] Mapped source_index_rep: row={source_index_rep.row()}, col={source_index_rep.column()}") # 로그 B
+                     
+                     proxy_index_mem = self.duplicate_table_proxy_model.index(proxy_row, 2)
+                     print(f"[Restore Loop Debug] Got proxy_index_mem.") # 로그 C
+                     source_index_mem = self.duplicate_table_proxy_model.mapToSource(proxy_index_mem)
+                     print(f"[Restore Loop Debug] Mapped source_index_mem: row={source_index_mem.row()}, col={source_index_mem.column()}") # 로그 D
+                     # --- 변경 끝 ---
+                     
+                     # 소스 모델에서 현재 행의 대표/멤버 경로 가져오기
+                     current_rep_item = self.duplicate_table_model.item(source_index_rep.row(), 1)
+                     print(f"[Restore Loop Debug] Got current_rep_item.") # 로그 E
+                     current_mem_item = self.duplicate_table_model.item(source_index_mem.row(), 2)
+                     print(f"[Restore Loop Debug] Got current_mem_item.") # 로그 F
+                     
+                     current_rep_path = current_rep_item.text() if current_rep_item else None
+                     print(f"[Restore Loop Debug] Got current_rep_path: {os.path.basename(current_rep_path) if current_rep_path else 'None'}") # 로그 G
+                     current_mem_path = current_mem_item.text() if current_mem_item else None
+                     print(f"[Restore Loop Debug] Got current_mem_path: {os.path.basename(current_mem_path) if current_mem_path else 'None'}") # 로그 H
+                     
+                     if current_rep_path == target_rep_path and current_mem_path == target_mem_path:
+                          print(f"[Restore Loop Debug] Found exact match at proxy_row {proxy_row}") # 로그 I
+                          restored_proxy_row_index = proxy_row
+                          break 
+                print("[Restore Debug] Finished search loop.") # 루프 종료 로그
+                          
+            # 3. 찾은 행 선택, 스크롤 및 패널 업데이트 (EnsureVisible 사용)
+            if restored_proxy_row_index != -1:
+                self.duplicate_table_view.selectRow(restored_proxy_row_index)
+                self.on_table_item_clicked(self.duplicate_table_proxy_model.index(restored_proxy_row_index, 0))
         else:
-            print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
+             print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
+             # 미지원 타입 등 처리 후, UI 상태 업데이트 (선택 초기화 등 필요시)
+             # self._update_ui_after_action() # 필요 시 호출 
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 
