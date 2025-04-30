@@ -50,15 +50,16 @@ QPushButton {
     font-weight: bold; /* 글자 두껍게 */
 }
 
-PUSHBUTTON:hover {
+/* 일반 버튼 Hover/Pressed/Disabled 스타일 (선택자 수정) */
+QPushButton:hover {
     background-color: #b2dfdb; /* 호버 시 조금 더 진하게 */
 }
 
-PUSHBUTTON:pressed {
+QPushButton:pressed {
     background-color: #a0cac5; /* 클릭 시 조금 더 어둡게 */
 }
 
-PUSHBUTTON:disabled {
+QPushButton:disabled {
     background-color: #f5f5f5;
     color: #bdbdbd; /* 비활성화 시 색상 조정 */
     border-color: #e0e0e0;
