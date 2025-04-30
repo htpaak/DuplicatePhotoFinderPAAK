@@ -909,7 +909,8 @@ class MainWindow(QMainWindow):
             self.last_acted_member_path = None
 
     def move_selected_image(self, target: str):
-        """선택된 이미지를 이동하고 그룹 데이터를 업데이트합니다. (구현 필요) """
+        """선택된 이미지를 이동하고 그룹 데이터를 업데이트합니다."""
+        print(f"[Move Entry] move_selected_image called with target: {target}")
         # --- 액션 전 상태 저장 (프록시 인덱스 및 경로) --- 
         selected_proxy_indexes = self.duplicate_table_view.selectedIndexes()
         if not selected_proxy_indexes:
@@ -934,18 +935,132 @@ class MainWindow(QMainWindow):
         original_member_path = member_item.text()
         group_id = group_id_item.text()
         self.last_acted_group_id = group_id 
-        # *** 복원 시 정확한 행 식별을 위한 정보 저장 ***
         self.last_acted_representative_path = original_representative_path
         self.last_acted_member_path = original_member_path
 
-        # 임시: 실제 이동 로직 추가 필요
-        # self.undo_manager.move_file(image_path_to_move, destination, group_id, original_rep, original_members, snapshot_rep, snapshot_members)
+        image_path_to_move = original_representative_path if target == 'original' else original_member_path
+        print(f"[Move Debug] Determined path to move: {image_path_to_move}")
 
-        # 이동 미구현이므로 상태 초기화 (스냅샷 포함)
-        self.previous_selection_index = None
-        self.last_acted_group_id = None
-        self.last_acted_representative_path = None
-        self.last_acted_member_path = None
+        if not os.path.exists(image_path_to_move):
+            QMessageBox.critical(self, "Error", f"File to move does not exist:\n{image_path_to_move}")
+            self.previous_selection_index = None
+            self.last_acted_group_id = None
+            return
+
+        # 1. 대상 폴더 선택
+        destination_folder = QFileDialog.getExistingDirectory(self, f"Select Destination Folder for {os.path.basename(image_path_to_move)}")
+        if not destination_folder:
+            print("[Move Debug] Folder selection cancelled.")
+            self.previous_selection_index = None # 사용자가 취소 시 상태 초기화
+            self.last_acted_group_id = None
+            return
+
+        print(f"[Move Debug] Destination folder selected: {destination_folder}")
+
+        # 2. 실행 취소를 위한 데이터 준비
+        try:
+            import copy
+            # 현재 그룹 상태 스냅샷
+            snapshot_rep = self.group_representatives.get(group_id)
+            snapshot_members = copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
+            print(f"[Move Debug] Created restore snapshot for group {group_id}. Rep: {os.path.basename(snapshot_rep) if snapshot_rep else 'None'}, Members: {len(snapshot_members)}")
+            
+            # UndoManager 에 전달할 현재 대표 및 멤버 목록
+            representative_path_for_undo = snapshot_rep # 스냅샷의 대표 사용
+            member_paths_for_undo = [path for path, _, _ in snapshot_members]
+            all_original_paths_for_undo = [representative_path_for_undo] + member_paths_for_undo
+            print(f"[Move Debug] Prepared paths for undo: Rep={os.path.basename(representative_path_for_undo)}, All={len(all_original_paths_for_undo)}")
+            
+            # 3. 파일 이동 실행 (UndoManager 사용)
+            print("[Move Debug] Attempting to move file via UndoManager...")
+            if self.undo_manager.move_file(image_path_to_move, destination_folder, group_id, representative_path_for_undo, all_original_paths_for_undo, snapshot_rep, snapshot_members):
+                print(f"[Move Debug] File moved successfully (via UndoManager): {image_path_to_move} -> {destination_folder}")
+                
+                # 4. 내부 데이터 업데이트
+                print("[Move Debug] Removing moved file from internal group data...")
+                current_group_tuples = self.duplicate_groups_data.get(group_id)
+                if current_group_tuples is None:
+                    print(f"[Move Warning] Group data for {group_id} already missing after move?")
+                    self._update_ui_after_action() # UI 정리 시도
+                    return
+                    
+                found_and_removed = False
+                for i, (path, _, _) in enumerate(current_group_tuples):
+                    if path == image_path_to_move:
+                        print(f"[Move Debug] Found item to remove at index {i}")
+                        del current_group_tuples[i]
+                        found_and_removed = True
+                        print(f"[Move Debug] Removed {os.path.basename(image_path_to_move)} from group {group_id}. Remaining members: {len(current_group_tuples)}")
+                        break
+                if not found_and_removed:
+                     print(f"[Move Warning] {image_path_to_move} not found in group data {group_id} after move.")
+
+                # 5. 대표 이미지 처리
+                print("[Move Debug] Checking if representative needs update...")
+                current_representative = self.group_representatives.get(group_id)
+                if image_path_to_move == current_representative:
+                    print("[Move Debug] Moved item was the representative.")
+                    if current_group_tuples:
+                        print("[Move Debug] Setting new representative...")
+                        new_representative_path, _, _ = current_group_tuples[0]
+                        self.group_representatives[group_id] = new_representative_path
+                        del current_group_tuples[0] # 새 대표는 멤버 목록에서 제거
+                        print(f"[Move Debug] Group {group_id}: New representative set to {os.path.basename(new_representative_path)}")
+                        if not current_group_tuples:
+                             print("[Move Debug] Group became empty after setting new representative.")
+                             # 그룹 제거는 아래 로직에서 처리
+                    else:
+                        print(f"[Move Debug] Group {group_id} is now empty after moving the only representative, removing group data.")
+                        if group_id in self.duplicate_groups_data: del self.duplicate_groups_data[group_id]
+                        if group_id in self.group_representatives: del self.group_representatives[group_id]
+                        print("[Move Debug] Group data removed.")
+                else:
+                    print("[Move Debug] Moved item was not the representative.")
+                    if not current_group_tuples:
+                        # 대표가 아닌 마지막 멤버가 이동된 경우
+                        print(f"[Move Debug] Last member moved from group {group_id}. Removing group data.")
+                        if group_id in self.duplicate_groups_data: del self.duplicate_groups_data[group_id]
+                        if group_id in self.group_representatives: del self.group_representatives[group_id]
+                        print("[Move Debug] Group data removed.")
+
+                # 6. 테이블 및 UI 업데이트
+                if group_id in self.duplicate_groups_data and self.duplicate_groups_data[group_id]: # 그룹이 존재하고 멤버가 남아있을 때만 테이블 업데이트
+                     print(f"[Move Debug] Calling _update_table_for_group for group {group_id}...")
+                     self._update_table_for_group(group_id)
+                     print(f"[Move Debug] Finished _update_table_for_group for group {group_id}.")
+                elif group_id not in self.duplicate_groups_data or not self.duplicate_groups_data.get(group_id): # 그룹 자체가 삭제되었거나 비었을 때
+                     print(f"[Move Debug] Group {group_id} removed or empty, removing rows from table model...")
+                     rows_to_remove = []
+                     for row in range(self.duplicate_table_model.rowCount()):
+                          item = self.duplicate_table_model.item(row, 4) # Group ID
+                          if item and item.text() == group_id:
+                               print(f"[Move Debug] Found row {row} to remove for group {group_id}")
+                               rows_to_remove.append(row)
+                     if rows_to_remove:
+                         print(f"[Move Debug] Removing rows: {rows_to_remove}")
+                         for row in sorted(rows_to_remove, reverse=True):
+                              self.duplicate_table_model.removeRow(row)
+                         print("[Move Debug] Rows removed from table model.")
+                     else:
+                         print("[Move Debug] No rows found to remove for the deleted/empty group.")
+
+                print("[Move Debug] Calling _update_ui_after_action...")
+                self._update_ui_after_action()
+                print("[Move Debug] Move action finished successfully.")
+            else:
+                # 이동 실패 시 (UndoManager 에서 메시지 표시되었을 수 있음)
+                print(f"[Move Error] UndoManager reported failure moving {image_path_to_move}")
+                # 실패 시 상태 초기화 필요할 수 있음 (예: 선택 복구)
+                self.previous_selection_index = None
+                self.last_acted_group_id = None
+                # _update_ui_after_action() # UI 업데이트는 불필요할 수 있음
+
+        except Exception as e:
+            print(f"[Move Error] Failed to move file {image_path_to_move}. Error: {e}")
+            QMessageBox.critical(self, "Move Error", f"Failed to move file:\n{os.path.basename(image_path_to_move)}\nError: {e}")
+            # 실패 시 상태 초기화 필요할 수 있음 (예: 선택 복구)
+            self.previous_selection_index = None
+            self.last_acted_group_id = None
 
     def update_undo_button_state(self, enabled: bool):
         """Undo 버튼의 활성화 상태를 업데이트하는 슬롯"""

@@ -15,7 +15,7 @@ from pathlib import Path
 from PyQt5.QtWidgets import QMessageBox, QApplication, QTableView, QLabel
 from PyQt5.QtCore import QObject, pyqtSignal, Qt
 from PyQt5.QtGui import QStandardItemModel, QStandardItem
-from typing import Dict, Any, Optional, List, Tuple
+from typing import Dict, Any, Optional, List, Tuple, TYPE_CHECKING
 import send2trash
 
 # Windows 환경에서 사용할 winshell 패키지
@@ -24,6 +24,10 @@ try:
     WINSHELL_AVAILABLE = True
 except ImportError:
     WINSHELL_AVAILABLE = False
+
+# 타입 검사를 위한 조건부 임포트
+if TYPE_CHECKING:
+    from ui.main_window import MainWindow
 
 class UndoManager(QObject):
     """
@@ -223,10 +227,9 @@ class UndoManager(QObject):
 
         try:
             shutil.move(current_path, original_path)
-            # 테이블 복원 로직 변경: MainWindow에서 처리하도록 시그널 발생 (추후 필요 시)
+            # 테이블 복원 로직 변경: MainWindow에서 처리하도록 시그널 발생
             print(f"[UndoManager] Move undone for: {original_path}. Triggering group state restore.")
-            # TODO: 이동 취소 시에도 그룹 상태 복원 시그널 발생 필요? (move_action 전달)
-            # self.group_state_restore_needed.emit(move_action) # 주석 처리 (이동 로직은 아직 미완성)
+            self.group_state_restore_needed.emit(move_action)
             return True, original_path
         except Exception as e:
             self.show_message(f"Failed to undo move: {e}", 'error')
