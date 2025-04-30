@@ -427,7 +427,7 @@ class MainWindow(QMainWindow):
             target_rep_path = self.last_acted_representative_path
             target_mem_path = self.last_acted_member_path
             restored_proxy_row_index = -1
-            if target_rep_path and target_mem_path:
+            if target_rep_path and target_mem_path: 
                 for proxy_row in range(self.duplicate_table_proxy_model.rowCount()):
                      proxy_index_rep = self.duplicate_table_proxy_model.index(proxy_row, 1)
                      source_index_rep = self.duplicate_table_proxy_model.mapToSource(proxy_index_rep)
@@ -439,10 +439,10 @@ class MainWindow(QMainWindow):
                      current_mem_path = current_mem_item.text() if current_mem_item else None
                      if current_rep_path == target_rep_path and current_mem_path == target_mem_path:
                           restored_proxy_row_index = proxy_row
-                          break
-                if restored_proxy_row_index != -1:
-                    self.duplicate_table_view.selectRow(restored_proxy_row_index)
-                    self.on_table_item_clicked(self.duplicate_table_proxy_model.index(restored_proxy_row_index, 0))
+                          break 
+            if restored_proxy_row_index != -1:
+                self.duplicate_table_view.selectRow(restored_proxy_row_index)
+                self.on_table_item_clicked(self.duplicate_table_proxy_model.index(restored_proxy_row_index, 0))
         else:
              print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
              # 미지원 타입 등 처리 후, UI 상태 업데이트 (선택 초기화 등 필요시)
