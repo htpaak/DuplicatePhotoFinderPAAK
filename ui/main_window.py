@@ -316,10 +316,8 @@ class MainWindow(QMainWindow):
         left_panel_layout.addWidget(self.left_info_label)
         left_button_layout = QHBoxLayout()
         self.left_move_button = QPushButton("Move")
-        self.left_browse_button = QPushButton("Browse")
         self.left_delete_button = QPushButton("Delete")
         left_button_layout.addWidget(self.left_move_button)
-        left_button_layout.addWidget(self.left_browse_button)
         left_button_layout.addWidget(self.left_delete_button)
         left_panel_layout.addLayout(left_button_layout)
         image_comparison_layout.addLayout(left_panel_layout)
@@ -335,10 +333,8 @@ class MainWindow(QMainWindow):
         right_panel_layout.addWidget(self.right_info_label)
         right_button_layout = QHBoxLayout()
         self.right_move_button = QPushButton("Move")
-        self.right_browse_button = QPushButton("Browse")
         self.right_delete_button = QPushButton("Delete")
         right_button_layout.addWidget(self.right_move_button)
-        right_button_layout.addWidget(self.right_browse_button)
         right_button_layout.addWidget(self.right_delete_button)
         right_panel_layout.addLayout(right_button_layout)
         image_comparison_layout.addLayout(right_panel_layout)
@@ -401,8 +397,6 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(splitter)
 
         # --- 시그널 연결 ---
-        self.left_browse_button.clicked.connect(self.browse_left_image)
-        self.right_browse_button.clicked.connect(self.browse_right_image)
         self.scan_folder_button.clicked.connect(self.scan_folder) # scan_folder_button 참조 사용
         self.duplicate_table_view.clicked.connect(self.on_table_item_clicked)
         # 삭제 버튼 시그널 연결 (대상 이미지 지정)
