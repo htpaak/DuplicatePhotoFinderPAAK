@@ -8,6 +8,14 @@ if exist "__pycache__" (
     echo Removing __pycache__ directory...
     rd /s /q "__pycache__"
 )
+if exist "ui\__pycache__" ( # ui 폴더 내 캐시도 제거
+    echo Removing ui\__pycache__ directory...
+    rd /s /q "ui\__pycache__"
+)
+if exist "file\__pycache__" ( # file 폴더 내 캐시도 제거 (존재할 경우)
+    echo Removing file\__pycache__ directory...
+    rd /s /q "file\__pycache__"
+)
 if exist "build" (
     echo Removing build directory...
     rd /s /q "build"
@@ -18,6 +26,9 @@ if exist "dist" (
 )
 echo Removing *.spec files...
 del /q *.spec
+del /q "ui\*.spec" # 하위 폴더 spec 파일도 제거
+del /q "file\*.spec"
+
 echo.
 
 echo Checking and installing PyInstaller if necessary...
@@ -39,20 +50,19 @@ REM PyInstaller 실행:
 REM --noconsole: 콘솔 창 없이 실행 (GUI 애플리케이션용)
 REM --onefile: 모든 파일을 하나의 실행 파일(.exe)로 묶음
 REM --clean: 빌드 전 캐시 정리
-REM --icon="assets/icon.ico": 실행 파일 아이콘 설정 (경로에 공백이 있을 수 있으므로 따옴표 사용)
-REM --add-data "assets;assets": assets 폴더 및 내용 포함 (애플리케이션에 따라 수정/제거)
+REM --icon="assets/icon.ico": 실행 파일 아이콘 설정
+REM --add-data "assets;assets": assets 폴더 및 내용 포함
 REM --exclude-module: 특정 모듈 제외 (테스트 등)
-REM --name="MyApplication": 생성될 실행 파일의 이름 지정
+REM --name="DuplicatePhotoFinderPAAK": 생성될 실행 파일의 이름 지정
 REM main.py: 빌드할 메인 파이썬 스크립트
 pyinstaller --noconsole ^
   --onefile ^
   --clean ^
-  --icon="assets/icon.ico" ^
+  --icon="assets\icon.ico" ^
   --add-data "assets;assets" ^
   --exclude-module=pytest ^
   --exclude-module=_pytest ^
-  --exclude-module=unittest ^
-  --name="MyApplication" ^
+  --name="DuplicatePhotoFinderPAAK" ^
   main.py
 
 echo.

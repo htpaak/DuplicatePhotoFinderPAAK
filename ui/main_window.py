@@ -58,7 +58,7 @@ class MainWindow(QMainWindow):
         self.scan_result_processor = ScanResultProcessor(self)
         # --- 핸들러/처리기 생성 끝 ---
 
-        self.setWindowTitle("DuplicatePhotoFinderApp")
+        self.setWindowTitle("DuplicatePhotoFinderPAAK")
         self.setGeometry(100, 100, 1100, 650) # 창 크기 조정 (1100x650)
 
         # --- UI 설정 함수 호출 --- 

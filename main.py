@@ -20,7 +20,7 @@ from ui.main_window import MainWindow
 # --- 설정 변수 정의 (바로 가기 관련 변수 제거) ---
 # APP_NAME = "DuplicatePhotoFinder" # MYAPPID 에서만 사용
 COMPANY_NAME = "htpaak"
-PRODUCT_NAME = "DuplicatePhotoFinderApp"
+PRODUCT_NAME = "DuplicatePhotoFinderPAAK"
 APP_VERSION = "1.0.0" 
 MYAPPID = f"{COMPANY_NAME}.{PRODUCT_NAME}.{APP_VERSION}"
 
