@@ -41,24 +41,24 @@ QLabel {
 }
 
 QPushButton {
-    background-color: #e0f2f1; /* 연한 민트 배경 */
-    border: 1px solid #b2dfdb; /* 조금 더 진한 민트 테두리 */
+    background-color: #e0f2f1; /* 일반 버튼 배경 (연한 민트) */
+    border: 1px solid #b2dfdb; /* 일반 버튼 테두리 */
     padding: 8px 15px; /* 패딩 증가 */
     border-radius: 8px; /* 더 둥근 모서리 */
     font-size: 10pt;
-    color: #00796b; /* 진한 틸(Teal) 색상 텍스트 */
+    color: #00796b; /* 일반 버튼 텍스트 */
     font-weight: bold; /* 글자 두껍게 */
 }
 
-QPushButton:hover {
+PUSHBUTTON:hover {
     background-color: #b2dfdb; /* 호버 시 조금 더 진하게 */
 }
 
-QPushButton:pressed {
+PUSHBUTTON:pressed {
     background-color: #a0cac5; /* 클릭 시 조금 더 어둡게 */
 }
 
-QPushButton:disabled {
+PUSHBUTTON:disabled {
     background-color: #f5f5f5;
     color: #bdbdbd; /* 비활성화 시 색상 조정 */
     border-color: #e0e0e0;
@@ -101,26 +101,51 @@ QLabel#status_label { /* 상태 레이블 스타일 */
     font-size: 9pt;
 }
 
-/* Undo 버튼 스타일 재정의 */
+/* === 버튼 스타일 교체 === */
+/* Undo 버튼 -> 이제 일반 버튼 스타일 (민트) 적용 */
 QPushButton#undo_button {
-    background-color: #eeeeee; /* Undo 버튼 배경 (밝은 회색) */
-    border: 1px solid #bdbdbd; /* Undo 버튼 테두리 */
-    color: #424242; /* Undo 버튼 텍스트 (어두운 회색) */
+    background-color: #e0f2f1; 
+    border: 1px solid #b2dfdb; 
+    color: #00796b; 
 }
 
 QPushButton#undo_button:hover {
-    background-color: #e0e0e0;
+    background-color: #b2dfdb;
 }
 
 QPushButton#undo_button:pressed {
+    background-color: #a0cac5;
+}
+
+/* Undo 버튼 비활성화 스타일 수정 */
+QPushButton#undo_button:disabled {
+    background-color: #cfeae8; /* 약간 더 어둡고 채도 낮은 민트 */
+    color: #9e9e9e;      /* 기본 비활성화보다 조금 더 진한 회색 */
+    border-color: #a8d3cf; /* 약간 더 어둡고 채도 낮은 민트 테두리 */
+}
+
+/* Feedback 버튼 -> 이제 이전 Undo 버튼 스타일 (회색) 적용 */
+QPushButton#feedback_button {
+    background-color: #eeeeee; /* 배경 (밝은 회색) */
+    border: 1px solid #bdbdbd; /* 테두리 */
+    color: #424242; /* 텍스트 (어두운 회색) */
+    /* 패딩값은 기본 QPushButton 설정 따름 (필요시 조절) */
+}
+
+QPushButton#feedback_button:hover {
+    background-color: #e0e0e0;
+}
+
+QPushButton#feedback_button:pressed {
     background-color: #bdbdbd;
 }
 
-QPushButton#undo_button:disabled {
+QPushButton#feedback_button:disabled {
     background-color: #f5f5f5;
     color: #bdbdbd;
     border-color: #e0e0e0;
 }
+/* === 스타일 교체 끝 === */
 """
 
 def setup_ui(window: 'MainWindow'):
@@ -190,7 +215,17 @@ def setup_ui(window: 'MainWindow'):
     window.undo_button.setEnabled(window.undo_manager.can_undo())
     scan_status_layout.addWidget(window.scan_folder_button)
     scan_status_layout.addWidget(window.status_label, 1)
+
+    # --- 피드백 버튼 추가 --- 
+    window.feedback_button = QPushButton("💬")
+    window.feedback_button.setToolTip("Send Feedback")
+    window.feedback_button.setObjectName("feedback_button") # 객체 이름 설정
+    # main_window.py 에 추가될 메서드에 연결
+    window.feedback_button.clicked.connect(window.open_feedback_link) 
+    # --- 피드백 버튼 추가 끝 --- 
+
     scan_status_layout.addWidget(window.undo_button)
+    scan_status_layout.addWidget(window.feedback_button) # Undo 버튼 옆에 피드백 버튼 추가
     duplicate_list_layout.addLayout(scan_status_layout)
 
     # 중복 목록 테이블 뷰

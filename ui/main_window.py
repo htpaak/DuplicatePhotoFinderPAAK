@@ -1,5 +1,6 @@
 import sys
 import os
+import webbrowser # 웹 브라우저 모듈 임포트
 
 # 프로젝트 루트 경로를 sys.path에 추가
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
@@ -447,6 +448,18 @@ class MainWindow(QMainWindow):
              print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
              # 미지원 타입 등 처리 후, UI 상태 업데이트 (선택 초기화 등 필요시)
              # self._update_ui_after_action() # 필요 시 호출 
+
+    # --- 피드백 링크 여는 메서드 추가 ---
+    def open_feedback_link(self):
+        """피드백 링크 (GitHub Discussions)를 웹 브라우저에서 엽니다."""
+        try:
+            url = "https://github.com/htpaak/DuplicatePhotoFinderPAAK/discussions"
+            webbrowser.open(url)
+            print(f"Opened feedback URL: {url}")
+        except Exception as e:
+            print(f"Could not open feedback URL: {e}")
+            QMessageBox.warning(self, "Error", f"Could not open the feedback page:\n{e}")
+    # --- 메서드 추가 끝 ---
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 
