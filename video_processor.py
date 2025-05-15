@@ -4,6 +4,7 @@ from PIL import Image
 import av
 import io
 import tempfile
+import time
 
 class VideoProcessor:
     """비디오 파일에서 프레임을 추출하고 처리하는 클래스"""
@@ -56,8 +57,11 @@ class VideoProcessor:
                 # 원하는 위치로 이동
                 container.seek(timestamp, any_frame=False, backward=True, stream=stream)
                 
-                # 프레임 추출
-                for frame in container.decode(stream):
+                # 프레임 추출 (최대 10프레임까지 확인)
+                for i, frame in enumerate(container.decode(stream)):
+                    if i >= 10:  # 최대 10프레임까지만 확인
+                        break
+                        
                     if frame.pts * stream.time_base >= position_seconds:
                         # PIL Image로 변환
                         img = frame.to_image()
@@ -68,6 +72,22 @@ class VideoProcessor:
                         # NumPy 배열로 변환
                         return np.array(img)
             
+            # 적절한 프레임을 찾지 못한 경우 첫 번째 프레임 반환 시도
+            try:
+                with av.open(video_path) as container:
+                    stream = next((s for s in container.streams if s.type == 'video'), None)
+                    if stream is None:
+                        return None
+                        
+                    container.seek(0)
+                    for frame in container.decode(stream):
+                        img = frame.to_image()
+                        img = img.resize(output_size)
+                        img = img.convert('L')
+                        return np.array(img)
+            except:
+                pass
+                
             return None
         except Exception as e:
             print(f"프레임 추출 오류: {e}")
@@ -90,6 +110,37 @@ class VideoProcessor:
             frame = self.extract_frame_at_percent(video_path, pos, output_size)
             if frame is not None:
                 frames.append(frame)
+        
+        # 최소 1개 이상의 프레임을 확보하기 위한 추가 시도
+        if not frames:
+            # 다른 위치에서 추가로 시도
+            additional_positions = [5, 15, 25, 35, 45, 55, 65, 75, 85, 95]
+            for pos in additional_positions:
+                if pos not in positions_percent:
+                    frame = self.extract_frame_at_percent(video_path, pos, output_size)
+                    if frame is not None:
+                        frames.append(frame)
+                        if len(frames) >= 3:  # 최소 3개 확보되면 중단
+                            break
+        
+        # 여전히 프레임이 없으면 첫 키프레임만 추출 시도
+        if not frames:
+            try:
+                with av.open(video_path) as container:
+                    stream = next((s for s in container.streams if s.type == 'video'), None)
+                    if stream:
+                        container.seek(0)
+                        for frame in container.decode(stream):
+                            img = frame.to_image()
+                            img = img.resize(output_size)
+                            img = img.convert('L')
+                            frames.append(np.array(img))
+                            frames.append(np.array(img))  # 같은 프레임 2번 추가 (유사도 계산 때문)
+                            frames.append(np.array(img))  # 같은 프레임 3번 추가
+                            break
+            except Exception as e:
+                print(f"첫 키프레임 추출 오류: {e}")
+                
         return frames if frames else None
         
     @staticmethod
@@ -111,4 +162,8 @@ class VideoProcessor:
         # 차이를 0-100 범위의 유사도로 변환
         max_pixel_value = 255.0
         similarity = 100.0 * (1.0 - (diff / max_pixel_value))
+        
+        # 파일 이름만 같으면 강제로 유사도를 높임
+        # 이건 이미 비디오 중복 찾기 로직에서 처리하므로 여기서는 제거
+        
         return similarity 

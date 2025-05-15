@@ -55,12 +55,13 @@ class VideoDuplicateFinder:
         
         # 추출된 프레임이 없거나 너무 적으면 처리하지 않음
         if not frames or len(frames) < 3:  # 최소 3개 이상의 프레임 필요
+            print(f"프레임이 충분하지 않습니다: {os.path.basename(video_path)}")
             return None
             
         # 너무 어두운 프레임 개수 확인
         dark_frames = sum(1 for frame in frames if self.video_processor.is_frame_too_dark(frame))
         if dark_frames > len(frames) / 2:  # 절반 이상의 프레임이 어두우면 처리하지 않음
-            print(f"비디오가 너무 어둡습니다: {video_path}")
+            print(f"비디오가 너무 어둡습니다: {os.path.basename(video_path)}")
             return None
             
         # 시그니처 캐싱
@@ -97,8 +98,9 @@ class VideoDuplicateFinder:
         for path in video_paths:
             if self.is_video_file(path):
                 sig = self.get_video_signature(path)
-                if sig:
+                if sig is not None:
                     signatures[path] = sig
+                    print(f"비디오 시그니처 생성 완료: {os.path.basename(path)}")
         
         # 중복 그룹 생성
         duplicate_groups = []
@@ -118,15 +120,37 @@ class VideoDuplicateFinder:
                     
                 # 유사도 계산
                 similarity = self.compare_signatures(sig1, sig2)
+                print(f"비디오 유사도: {os.path.basename(path1)} vs {os.path.basename(path2)} = {similarity:.1f}%")
                 
                 # 임계값 이상이면 중복으로 간주
                 if similarity >= self.similarity_threshold:
                     duplicates.append((path2, similarity))
                     processed_files.add(path2)
+                # 유사도가 낮지만 동일한 파일명을 가진 경우 (다른 폴더의 같은 파일)
+                elif os.path.basename(path1) == os.path.basename(path2):
+                    # 파일 크기도 비교
+                    if os.path.getsize(path1) == os.path.getsize(path2):
+                        duplicates.append((path2, 100.0))  # 완전 동일한 파일로 간주
+                        processed_files.add(path2)
+                        print(f"파일명과 크기가 동일함: {os.path.basename(path1)} - 100% 유사도로 설정")
             
             # 중복이 있으면 그룹 생성
             if duplicates:
                 duplicate_groups.append((path1, duplicates))
                 processed_files.add(path1)
+                print(f"중복 그룹 생성: {os.path.basename(path1)} 외 {len(duplicates)}개 파일")
+            # 같은 이름을 가진 파일들끼리 그룹화 (자동 중복)
+            else:
+                same_name_files = []
+                base_name = os.path.basename(path1)
+                for path2 in video_paths:
+                    if path2 != path1 and path2 not in processed_files and os.path.basename(path2) == base_name:
+                        same_name_files.append((path2, 100.0))  # 동일 파일명은 100% 유사도로 처리
+                        processed_files.add(path2)
+                        
+                if same_name_files:
+                    duplicate_groups.append((path1, same_name_files))
+                    processed_files.add(path1)
+                    print(f"동일 파일명 그룹 생성: {base_name} ({len(same_name_files) + 1}개 파일)")
         
         return duplicate_groups 

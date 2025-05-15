@@ -96,35 +96,54 @@ class MainWindow(QMainWindow):
         """정보 레이블을 업데이트하고 ImageLabel에 Pixmap을 설정합니다."""
         # ImageLabel에 Pixmap 설정 시도 (이제 RAW/TGA/비디오 처리 가능)
         success = image_label.setPixmapFromFile(file_path)
-
-        if success:
-            try:
-                file_size_kb = round(os.path.getsize(file_path) / 1024)
-                file_ext = os.path.splitext(file_path)[1].upper()[1:]
-                filename = os.path.basename(file_path)
+        
+        if not success:
+            if file_path and not os.path.exists(file_path):
+                # 파일 경로가 있지만 존재하지 않는 경우
+                info_label.setText(f"File not found\n{os.path.basename(file_path)}")
+            elif not file_path:
+                # 파일 경로 자체가 없는 경우 (초기화 등)
+                image_label.clear() # 명시적으로 clear 호출
+                info_label.setText("Image Info")
+            return
+            
+        try:
+            # 파일 정보 가져오기
+            file_size_kb = round(os.path.getsize(file_path) / 1024)
+            file_ext = os.path.splitext(file_path)[1].upper()[1:]
+            filename = os.path.basename(file_path)
+            
+            # 비디오 파일인 경우
+            if image_label.is_video:
+                # 비디오 길이 가져오기 시도
+                from video_processor import VideoProcessor
+                try:
+                    duration = VideoProcessor.get_video_duration(file_path)
+                    duration_text = f", {duration:.1f}초" if duration > 0 else ""
+                except:
+                    duration_text = ""
                 
-                # 비디오 파일인 경우 다른 형식으로 정보 표시
-                if image_label.is_video:
-                    # 비디오 정보 표시
-                    info_text = f"VIDEO {file_ext} {file_size_kb} KB\n{filename}"
-                    info_label.setText(info_text)
-                elif image_label._original_pixmap: # 이미지 파일이고 pixmap이 있는 경우
-                    pixmap = image_label._original_pixmap # 저장된 원본 사용
-                    # 원본 이미지 크기를 정보에 표시
-                    info_text = f"{file_ext} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB\n{filename}"
-                    info_label.setText(info_text)
-            except FileNotFoundError:
-                info_label.setText(f"File info error: Not found\n{os.path.basename(file_path)}")
-            except Exception as e:
-                print(f"Error getting file info: {e}")
-                info_label.setText(f"Error getting info\n{os.path.basename(file_path)}")
-        elif file_path and not os.path.exists(file_path):
-             # 파일 경로가 있지만 존재하지 않는 경우 (이 경우는 setPixmapFromFile 시작 시 처리됨)
-             info_label.setText(f"File not found\n{os.path.basename(file_path)}")
-        elif not file_path:
-            # 파일 경로 자체가 없는 경우 (초기화 등)
-            image_label.clear() # 명시적으로 clear 호출
-            info_label.setText("Image Info")
+                # 비디오 정보 표시
+                info_text = f"VIDEO {file_ext} {file_size_kb:,} KB{duration_text}\n{filename}"
+                info_label.setText(info_text)
+            
+            # 이미지 파일인 경우
+            elif image_label._original_pixmap:
+                pixmap = image_label._original_pixmap
+                # 원본 이미지 크기를 정보에 표시
+                info_text = f"{file_ext} {pixmap.width()} x {pixmap.height()} {file_size_kb:,} KB\n{filename}"
+                info_label.setText(info_text)
+            
+            # 그 외 경우 (pixmap이 없을 때)
+            else:
+                info_text = f"{file_ext} {file_size_kb:,} KB\n{filename}"
+                info_label.setText(info_text)
+                
+        except FileNotFoundError:
+            info_label.setText(f"File info error: Not found\n{os.path.basename(file_path)}")
+        except Exception as e:
+            print(f"Error getting file info: {e}")
+            info_label.setText(f"Error getting info\n{os.path.basename(file_path)}")
 
     def browse_left_image(self):
         """왼쪽 'Browse' 버튼 클릭 시 파일 대화 상자를 열고 이미지를 로드합니다."""

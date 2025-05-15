@@ -1,12 +1,13 @@
 import os
 from PyQt5.QtWidgets import QLabel
-from PyQt5.QtGui import QPixmap, QResizeEvent, QImage, QPainter, QIcon
-from PyQt5.QtCore import Qt, QSize
+from PyQt5.QtGui import QPixmap, QResizeEvent, QImage, QPainter, QIcon, QColor, QFont, QPen
+from PyQt5.QtCore import Qt, QSize, QRect
 from typing import Optional
 from PIL import Image
 import rawpy
 import numpy as np
 from image_processor import RAW_EXTENSIONS, VIDEO_EXTENSIONS
+import av  # PyAV 임포트 추가
 
 class ImageLabel(QLabel):
     """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
@@ -32,34 +33,73 @@ class ImageLabel(QLabel):
         try:
             # 비디오 파일 처리
             if self.is_video:
-                # 비디오용 기본 아이콘 또는 썸네일 표시
+                # PyAV를 사용하여 첫 프레임 추출 시도
                 try:
-                    # PyAV를 사용하여 첫 프레임 추출 시도 (여기서는 아이콘으로 대체)
-                    video_icon = QPixmap(300, 300) # 빈 pixmap 생성
-                    video_icon.fill(Qt.transparent) # 배경 투명하게
+                    # 첫 프레임 추출 시도
+                    frame_extracted = False
+                    container = av.open(file_path)
+                    video_stream = next((s for s in container.streams if s.type == 'video'), None)
                     
-                    # 기본 비디오 아이콘 그리기
+                    if video_stream:
+                        # 첫 번째 키프레임을 찾아 추출
+                        container.seek(0)
+                        for frame in container.decode(video_stream):
+                            # 프레임을 PIL 이미지로 변환
+                            pil_img = frame.to_image()
+                            # PIL 이미지를 QPixmap으로 변환
+                            img_bytes = pil_img.tobytes('raw', 'RGB')
+                            qimg = QImage(img_bytes, pil_img.width, pil_img.height, 
+                                        pil_img.width * 3, QImage.Format_RGB888)
+                            pixmap = QPixmap.fromImage(qimg)
+                            frame_extracted = True
+                            break  # 첫 프레임만 사용
+                    
+                    container.close()
+                    
+                    # 프레임 추출 실패 시 기본 비디오 아이콘 사용
+                    if not frame_extracted:
+                        raise Exception("첫 프레임 추출 실패")
+                        
+                except Exception as e:
+                    print(f"비디오 프레임 추출 오류: {e}")
+                    # 추출 실패 시 기본 비디오 아이콘 사용
+                    video_icon = QPixmap(300, 300)
+                    video_icon.fill(Qt.black)  # 배경을 검은색으로 변경
+                    
+                    # 비디오 아이콘 그리기
                     painter = QPainter(video_icon)
                     painter.setRenderHint(QPainter.Antialiasing)
                     
-                    # 비디오 아이콘 중앙에 그리기
-                    icon = QIcon.fromTheme("video-x-generic")
-                    if icon.isNull():
-                        # 테마 아이콘이 없으면 텍스트로 대체
-                        painter.setPen(Qt.white)
-                        painter.drawText(video_icon.rect(), Qt.AlignCenter, "VIDEO")
-                    else:
-                        icon.paint(painter, video_icon.rect())
+                    # 비디오 아이콘 중앙에 텍스트 그리기
+                    painter.setPen(QPen(QColor(255, 255, 255)))  # 흰색 텍스트
+                    font = QFont("Arial", 20, QFont.Bold)
+                    painter.setFont(font)
+                    
+                    # 파일명 표시 (너무 길면 줄임)
+                    basename = os.path.basename(file_path)
+                    if len(basename) > 20:
+                        basename = basename[:17] + "..."
+                        
+                    # 비디오 표시 추가
+                    rect = QRect(10, 10, 280, 280)
+                    painter.drawText(rect, Qt.AlignCenter, f"VIDEO\n{basename}")
+                    
+                    # 프레임 그리기 (화면 비율 표현)
+                    painter.setPen(QPen(QColor(255, 255, 255), 3))
+                    frame_rect = QRect(50, 80, 200, 140)  # 화면 비율을 16:9로 표현
+                    painter.drawRect(frame_rect)
+                    
+                    # 재생 버튼 그리기
+                    painter.setBrush(QColor(255, 255, 255))
+                    play_triangle = [
+                        frame_rect.center().x() - 15, frame_rect.center().y() - 25,
+                        frame_rect.center().x() - 15, frame_rect.center().y() + 25,
+                        frame_rect.center().x() + 30, frame_rect.center().y()
+                    ]
+                    painter.drawPolygon(*play_triangle)
                     
                     painter.end()
                     pixmap = video_icon
-                    
-                    # 파일명 표시
-                    self.setText(f"VIDEO: {os.path.basename(file_path)}")
-                except Exception as e:
-                    print(f"비디오 아이콘 생성 오류: {e}")
-                    self.setText(f"VIDEO FILE\n{os.path.basename(file_path)}")
-                    return False
                 
             # RAW 또는 TGA 파일 처리
             elif file_ext in RAW_EXTENSIONS or file_ext == '.tga':
