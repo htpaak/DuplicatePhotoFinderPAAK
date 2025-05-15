@@ -10,16 +10,17 @@ from video_processor import VideoProcessor
 from video_duplicate_finder import VideoDuplicateFinder
 # 파일 형식 정의 모듈 임포트
 from supported_formats import (
-    SUPPORTED_IMAGE_FORMATS, RAW_EXTENSIONS, VIDEO_ANIMATION_EXTENSIONS, 
-    ALL_SUPPORTED_FORMATS, HASH_THRESHOLD, VIDEO_SIMILARITY_THRESHOLD
+    STATIC_IMAGE_FORMATS, RAW_EXTENSIONS, VIDEO_ANIMATION_EXTENSIONS, 
+    ALL_SUPPORTED_FORMATS, HASH_THRESHOLD, VIDEO_SIMILARITY_THRESHOLD,
+    FRAME_CHECK_FORMATS, VIDEO_ONLY_EXTENSIONS
 )
 
 # 기존 중복 정의 제거하고 임포트된 상수 사용
-SUPPORTED_FORMATS = SUPPORTED_IMAGE_FORMATS
-VIDEO_EXTENSIONS = VIDEO_ANIMATION_EXTENSIONS
+SUPPORTED_FORMATS = STATIC_IMAGE_FORMATS.union(RAW_EXTENSIONS)
+VIDEO_EXTENSIONS = VIDEO_ONLY_EXTENSIONS
 
 # 지원하는 모든 파일 형식 (이미지 + 비디오)
-ALL_SUPPORTED_FORMATS = SUPPORTED_IMAGE_FORMATS.union(VIDEO_ANIMATION_EXTENSIONS)
+ALL_SUPPORTED_FORMATS = STATIC_IMAGE_FORMATS.union(RAW_EXTENSIONS).union(VIDEO_ONLY_EXTENSIONS).union(FRAME_CHECK_FORMATS)
 
 # 해시 유사도 임계값 - 모듈에서 임포트함으로 제거
 # HASH_THRESHOLD = 5
@@ -47,6 +48,47 @@ class ScanWorker(QObject):
         self._is_running = True # 외부에서 중단 요청 가능하도록 플래그 추가 (선택적)
         # 비디오 처리 객체 초기화
         self.video_finder = VideoDuplicateFinder()
+        
+    def check_animation_frames(self, file_path):
+        """
+        파일이 다중 프레임을 가진 애니메이션인지 확인합니다.
+        
+        반환값:
+            - True: 다중 프레임 애니메이션
+            - False: 단일 프레임 이미지
+            - None: 확인할 수 없음
+        """
+        try:
+            _, ext = os.path.splitext(file_path.lower())
+            
+            # 프레임 검사가 필요한 포맷인 경우
+            if ext in FRAME_CHECK_FORMATS:
+                with Image.open(file_path) as img:
+                    # 여러 프레임이 있는지 확인
+                    try:
+                        # n_frames 속성이 있는 경우
+                        if hasattr(img, 'n_frames') and img.n_frames > 1:
+                            print(f"다중 프레임 애니메이션 감지됨: {os.path.basename(file_path)} ({img.n_frames}프레임)")
+                            return True
+                    except AttributeError:
+                        pass
+                    
+                    # seek 메서드로 확인 시도
+                    try:
+                        img.seek(1)  # 두 번째 프레임 확인
+                        print(f"다중 프레임 애니메이션 감지됨: {os.path.basename(file_path)} (seek 메서드)")
+                        img.seek(0)  # 첫 번째 프레임으로 되돌림
+                        return True
+                    except EOFError:
+                        # 두 번째 프레임이 없으면 단일 프레임 이미지
+                        return False
+            
+            # 프레임 검사가 필요 없는 포맷인 경우
+            return None
+            
+        except Exception as e:
+            print(f"프레임 확인 중 오류: {file_path} - {e}")
+            return None
 
     def run_scan(self):
         """이미지와 비디오 스캔 작업을 실행하여 중복 그룹 목록과 유사도 점수를 반환합니다."""
@@ -56,7 +98,7 @@ class ScanWorker(QObject):
         grouped_files: Set[str] = set()
         processed_files_count = 0 # 실제로 처리(해싱)된 파일 수
         total_target_files = 0 # 스캔 대상 확장자를 가진 총 파일 수
-        target_files = [] # 스캔 대상 파일 목록
+        target_files = [] # 스캔 대상 이미지 파일 목록
         video_files = [] # 비디오 파일 목록
 
         try:
@@ -67,25 +109,61 @@ class ScanWorker(QObject):
                     for filename in files:
                         file_ext = os.path.splitext(filename)[1].lower()
                         file_path = os.path.join(root, filename)
-                        if os.path.isfile(file_path):
-                            if file_ext in SUPPORTED_FORMATS:
-                                target_files.append(file_path)
-                            elif file_ext in VIDEO_EXTENSIONS:
+                        if not os.path.isfile(file_path):
+                            continue
+                            
+                        # 항상 이미지인 포맷
+                        if file_ext in STATIC_IMAGE_FORMATS or file_ext in RAW_EXTENSIONS:
+                            target_files.append(file_path)
+                        # 항상 비디오/애니메이션인 포맷
+                        elif file_ext in VIDEO_ONLY_EXTENSIONS:
+                            video_files.append(file_path)
+                        # 프레임 검사가 필요한 포맷 (.webp, .gif 등)
+                        elif file_ext in FRAME_CHECK_FORMATS:
+                            # 프레임 수에 따라 이미지 또는 비디오로 분류
+                            is_animation = self.check_animation_frames(file_path)
+                            if is_animation is True:  # 애니메이션
                                 video_files.append(file_path)
+                            elif is_animation is False:  # 정적 이미지
+                                target_files.append(file_path)
+                            else:  # 알 수 없음, 확장자 기반으로 판단
+                                if file_ext in ['.gif', '.apng']:  # 일반적으로 애니메이션
+                                    video_files.append(file_path)
+                                else:  # 일반적으로 이미지
+                                    target_files.append(file_path)
             else:
                 # 현재 폴더의 파일만 수집 (기존 방식)
                 all_files_in_folder = os.listdir(self.folder_path)
                 for filename in all_files_in_folder:
                     file_path = os.path.join(self.folder_path, filename)
-                    if os.path.isfile(file_path):
-                        file_ext = os.path.splitext(filename)[1].lower()
-                        if file_ext in SUPPORTED_FORMATS:
-                            target_files.append(file_path)
-                        elif file_ext in VIDEO_EXTENSIONS:
+                    if not os.path.isfile(file_path):
+                        continue
+                        
+                    file_ext = os.path.splitext(filename)[1].lower()
+                    # 항상 이미지인 포맷
+                    if file_ext in STATIC_IMAGE_FORMATS or file_ext in RAW_EXTENSIONS:
+                        target_files.append(file_path)
+                    # 항상 비디오/애니메이션인 포맷
+                    elif file_ext in VIDEO_ONLY_EXTENSIONS:
+                        video_files.append(file_path)
+                    # 프레임 검사가 필요한 포맷 (.webp, .gif 등)
+                    elif file_ext in FRAME_CHECK_FORMATS:
+                        # 프레임 수에 따라 이미지 또는 비디오로 분류
+                        is_animation = self.check_animation_frames(file_path)
+                        if is_animation is True:  # 애니메이션
                             video_files.append(file_path)
+                        elif is_animation is False:  # 정적 이미지
+                            target_files.append(file_path)
+                        else:  # 알 수 없음, 확장자 기반으로 판단
+                            if file_ext in ['.gif', '.apng']:  # 일반적으로 애니메이션
+                                video_files.append(file_path)
+                            else:  # 일반적으로 이미지
+                                target_files.append(file_path)
             
             total_target_files = len(target_files) + len(video_files)
             self.scan_started.emit(total_target_files)
+            
+            print(f"이미지 파일 수: {len(target_files)}, 비디오/애니메이션 파일 수: {len(video_files)}")
 
             # 이미지 파일 처리
             for i, file_path in enumerate(target_files):
@@ -121,27 +199,8 @@ class ScanWorker(QObject):
                             if raw_obj:
                                 raw_obj.close() # rawpy 객체 리소스 해제
                     else:
-                        # 기존 Pillow 로직 (WebP 애니메이션 체크 포함)
-                        img = Image.open(file_path)
-                        is_animated_webp = False
-                        if file_ext == '.webp':
-                            try:
-                                if img.n_frames > 1:
-                                    is_animated_webp = True
-                            except AttributeError:
-                                try:
-                                    img.seek(1)
-                                    is_animated_webp = True
-                                    img.seek(0)
-                                except EOFError:
-                                    pass
-                        if is_animated_webp:
-                            print(f"Skipping animated WebP: {file_path}")
-                            img.close()
-                            continue
-                        # Pillow로 열린 이미지를 img_pil에 할당
-                        img_pil = img
-                        # img.close() 는 finally 블록에서 img_pil이 None이 아닐 때 처리
+                        # Pillow 로직 (WebP 애니메이션 체크는 이미 앞에서 처리됨)
+                        img_pil = Image.open(file_path)
 
                     # img_pil 객체가 생성되었으면 해시 계산 진행
                     if img_pil:

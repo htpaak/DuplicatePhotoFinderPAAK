@@ -5,7 +5,7 @@ from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication # processEvents 용
 from typing import TYPE_CHECKING, Dict, List, Tuple
 # 파일 형식 정의 모듈 임포트
-from supported_formats import VIDEO_ANIMATION_EXTENSIONS
+from supported_formats import VIDEO_ANIMATION_EXTENSIONS, VIDEO_ONLY_EXTENSIONS, FRAME_CHECK_FORMATS
 
 # MainWindow 타입 힌트만 임포트 (순환 참조 방지)
 if TYPE_CHECKING:
@@ -16,6 +16,12 @@ class ScanResultProcessor:
     """스캔 결과를 처리하고 MainWindow의 데이터와 UI를 업데이트하는 클래스"""
     def __init__(self, main_window: 'MainWindow'):
         self.main_window = main_window
+        
+    def is_video_file(self, file_path):
+        """파일이 비디오/애니메이션 형식인지 확인합니다.
+        이 함수는 파일 확장자만 확인하며, 실제 내용 검사는 하지 않습니다."""
+        _, ext = os.path.splitext(file_path.lower())
+        return ext in VIDEO_ONLY_EXTENSIONS or ext in FRAME_CHECK_FORMATS
 
     def process_results(self, total_files: int, processed_count: int, duplicate_groups_with_similarity: 'DuplicateGroupWithSimilarity'):
         """스캔 완료 시그널을 처리하여 결과를 테이블에 업데이트합니다."""
@@ -40,8 +46,7 @@ class ScanResultProcessor:
             temp_group_data[group_id] = {'rep': representative_path, 'members': []}
             
             # 파일 타입 확인 (비디오 또는 이미지)
-            file_ext = os.path.splitext(representative_path)[1].lower()
-            is_video = file_ext in VIDEO_ANIMATION_EXTENSIONS
+            is_video = self.is_video_file(representative_path)
             
             for member_path, similarity in members_with_similarity:
                 # 처리 방식을 파일 유형에 따라 분리
@@ -106,8 +111,7 @@ class ScanResultProcessor:
              item_member = QStandardItem(mem_path)
              
              # 파일 타입에 따라 유사도 표시 형식 변경
-             file_ext = os.path.splitext(rep_path)[1].lower()
-             is_video = file_ext in VIDEO_ANIMATION_EXTENSIONS
+             is_video = self.is_video_file(rep_path)
              
              if is_video:
                  # 비디오 파일의 경우 소수점 한 자리까지 표시

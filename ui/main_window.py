@@ -92,21 +92,17 @@ class MainWindow(QMainWindow):
             # QDesktopWidget 관련 오류 처리 (드물지만 발생 가능)
             print(f"Could not center window: {e}")
 
-    def _update_image_info(self, image_label: ImageLabel, info_label: QLabel, file_path: str):
-        """정보 레이블을 업데이트하고 ImageLabel에 Pixmap을 설정합니다."""
-        # ImageLabel에 Pixmap 설정 시도 (이제 RAW/TGA/비디오 처리 가능)
-        success = image_label.setPixmapFromFile(file_path)
-        
-        if not success:
-            if file_path and not os.path.exists(file_path):
-                # 파일 경로가 있지만 존재하지 않는 경우
-                info_label.setText(f"File not found\n{os.path.basename(file_path)}")
-            elif not file_path:
-                # 파일 경로 자체가 없는 경우 (초기화 등)
-                image_label.clear() # 명시적으로 clear 호출
-                info_label.setText("Image Info")
+    def _update_image_info(self, image_label, info_label, file_path):
+        """이미지 라벨과 정보 라벨을 업데이트합니다."""
+        if not os.path.exists(file_path):
+            image_label.clear()
+            info_label.setText("File not found")
             return
-            
+
+        # 이미지 로드 시도
+        loaded = image_label.load_path(file_path)
+        
+        # 파일 정보 업데이트
         try:
             # 파일 정보 가져오기
             file_size_kb = round(os.path.getsize(file_path) / 1024)

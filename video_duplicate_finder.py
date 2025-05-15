@@ -2,7 +2,7 @@ import os
 import numpy as np
 from video_processor import VideoProcessor
 # 파일 형식 정의 모듈 임포트
-from supported_formats import VIDEO_ANIMATION_EXTENSIONS, VIDEO_SIMILARITY_THRESHOLD
+from supported_formats import VIDEO_ANIMATION_EXTENSIONS, VIDEO_SIMILARITY_THRESHOLD, FRAME_CHECK_FORMATS, VIDEO_ONLY_EXTENSIONS
 
 class VideoDuplicateFinder:
     """비디오 중복을 찾기 위한 클래스"""
@@ -29,7 +29,9 @@ class VideoDuplicateFinder:
             
         # 모듈에서 정의된 비디오 및 애니메이션 확장자 사용
         _, ext = os.path.splitext(file_path.lower())
-        return ext in VIDEO_ANIMATION_EXTENSIONS
+        
+        # 항상 비디오로 처리할 확장자이거나 프레임 검사 필요 포맷인 경우
+        return ext in VIDEO_ONLY_EXTENSIONS or ext in FRAME_CHECK_FORMATS
         
     def get_video_signature(self, video_path):
         """

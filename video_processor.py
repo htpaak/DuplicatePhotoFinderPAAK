@@ -19,11 +19,117 @@ class VideoProcessor:
             print(f"PyAV 확인 오류: {e}")
             return False
     
+    @staticmethod
+    def is_webp_animation(file_path):
+        """파일이 WebP 애니메이션인지 확인합니다"""
+        if not os.path.exists(file_path):
+            return False
+            
+        _, ext = os.path.splitext(file_path.lower())
+        if ext != '.webp':
+            return False
+            
+        try:
+            with Image.open(file_path) as img:
+                # n_frames 속성 확인
+                try:
+                    if hasattr(img, 'n_frames') and img.n_frames > 1:
+                        return True
+                except AttributeError:
+                    pass
+                
+                # seek 메서드로 확인
+                try:
+                    img.seek(1)  # 두 번째 프레임 확인
+                    return True  # 두 번째 프레임이 있으면 애니메이션
+                except EOFError:
+                    return False  # 두 번째 프레임이 없으면 정적 이미지
+        except Exception as e:
+            print(f"WebP 확인 오류: {file_path} - {e}")
+            return False
+            
+    def extract_webp_frames(self, webp_path, positions_percent, output_size=(16, 16)):
+        """WebP 애니메이션에서 프레임을 추출합니다"""
+        if not os.path.exists(webp_path) or not self.is_webp_animation(webp_path):
+            return None
+            
+        try:
+            frames = []
+            with Image.open(webp_path) as img:
+                # 총 프레임 수 확인
+                try:
+                    frame_count = getattr(img, 'n_frames', 0)
+                    if frame_count <= 0:
+                        # n_frames가 없거나 0이면 수동으로 프레임 수 계산
+                        frame_count = 1
+                        try:
+                            while True:
+                                img.seek(frame_count)
+                                frame_count += 1
+                        except EOFError:
+                            pass  # 마지막 프레임에 도달
+                except Exception as e:
+                    print(f"WebP 프레임 수 확인 오류: {e}")
+                    frame_count = 0
+                    
+                if frame_count <= 0:
+                    return None
+                    
+                print(f"WebP 애니메이션 프레임 수: {frame_count}")
+                
+                # 위치 백분율에 해당하는 프레임 인덱스 계산
+                frame_indices = [min(int(pos * frame_count / 100), frame_count - 1) for pos in positions_percent]
+                
+                # 중복 제거
+                frame_indices = list(set(frame_indices))
+                
+                # 프레임 추출
+                for idx in frame_indices:
+                    try:
+                        img.seek(idx)
+                        frame = img.convert('L').resize(output_size)
+                        frames.append(np.array(frame))
+                    except Exception as e:
+                        print(f"WebP 프레임 {idx} 추출 오류: {e}")
+                        
+                # 최소 3개의 프레임 확보
+                if len(frames) < 3 and frame_count > 0:
+                    additional_indices = list(range(0, frame_count, max(1, frame_count // 5)))[:5]
+                    for idx in additional_indices:
+                        if len(frames) >= 3:
+                            break
+                        if idx not in frame_indices:
+                            try:
+                                img.seek(idx)
+                                frame = img.convert('L').resize(output_size)
+                                frames.append(np.array(frame))
+                            except Exception as e:
+                                print(f"WebP 추가 프레임 {idx} 추출 오류: {e}")
+                                
+                # 여전히 프레임이 부족하면 첫 프레임을 복제
+                while len(frames) < 3 and frames:
+                    frames.append(frames[0].copy())
+                    
+            return frames if frames else None
+                
+        except Exception as e:
+            print(f"WebP 프레임 추출 중 오류: {e}")
+            return None
+    
     @staticmethod        
     def get_video_duration(video_path):
         """비디오 파일의 재생 시간을 초 단위로 반환합니다"""
         if not os.path.exists(video_path):
             return 0
+            
+        # WebP 애니메이션인 경우 임의의 지속 시간 반환
+        if os.path.splitext(video_path.lower())[1] == '.webp':
+            try:
+                with Image.open(video_path) as img:
+                    if hasattr(img, 'n_frames') and img.n_frames > 1:
+                        return float(img.n_frames) * 0.1  # 프레임당 0.1초로 가정
+            except Exception:
+                pass
             
         try:
             with av.open(video_path) as container:
@@ -105,6 +211,11 @@ class VideoProcessor:
     
     def extract_multiple_frames(self, video_path, positions_percent, output_size=(16, 16)):
         """비디오에서 여러 위치의 프레임을 추출합니다"""
+        # WebP 애니메이션인 경우 특수 처리
+        if os.path.splitext(video_path.lower())[1] == '.webp' and self.is_webp_animation(video_path):
+            print(f"WebP 애니메이션 특수 처리: {os.path.basename(video_path)}")
+            return self.extract_webp_frames(video_path, positions_percent, output_size)
+        
         frames = []
         for pos in positions_percent:
             frame = self.extract_frame_at_percent(video_path, pos, output_size)

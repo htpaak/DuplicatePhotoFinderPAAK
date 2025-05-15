@@ -9,10 +9,15 @@
 # Pillow에서 일반적으로 지원하는 정적 이미지 형식
 STATIC_IMAGE_FORMATS = {
     # 기본 형식
-    '.png', '.jpg', '.jpeg', '.bmp', '.webp',
+    '.png', '.jpg', '.jpeg', '.bmp',
     # 추가 형식
     '.tif', '.tiff', '.ico', '.pcx',
     '.ppm', '.pgm', '.pbm', '.tga',
+}
+
+# 프레임 검사가 필요한 포맷 (정적 이미지 또는 애니메이션일 수 있음)
+FRAME_CHECK_FORMATS = {
+    '.webp', '.gif', '.apng', '.mng'
 }
 
 # RAW 이미지 확장자
@@ -21,20 +26,23 @@ RAW_EXTENSIONS = {
     '.raf', '.pef', '.srw', '.kdc', '.raw'
 }
 
-# 모든 이미지 형식 = 정적 이미지 + RAW 이미지
-SUPPORTED_IMAGE_FORMATS = STATIC_IMAGE_FORMATS.union(RAW_EXTENSIONS)
-
-# 비디오 및 애니메이션 확장자
-VIDEO_ANIMATION_EXTENSIONS = {
+# 항상 비디오/애니메이션으로 처리할 확장자
+VIDEO_ONLY_EXTENSIONS = {
     # 일반 비디오 형식
     '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', 
     '.m4v', '.mpg', '.mpeg', '.3gp',
-    # 애니메이션 형식
-    '.gif', '.apng', '.mng', '.webp', '.svg', '.ani', '.swf'
+    # 항상 애니메이션으로 처리할 형식
+    '.svg', '.ani', '.swf'
 }
 
+# 모든 이미지 형식 = 정적 이미지 + RAW 이미지 + 프레임 검사 필요 (실행 시 분류됨)
+SUPPORTED_IMAGE_FORMATS = STATIC_IMAGE_FORMATS.union(RAW_EXTENSIONS).union(FRAME_CHECK_FORMATS)
+
+# 비디오 및 애니메이션 확장자 (FRAME_CHECK_FORMATS는 실행 시 분류됨)
+VIDEO_ANIMATION_EXTENSIONS = VIDEO_ONLY_EXTENSIONS.union(FRAME_CHECK_FORMATS)
+
 # 지원하는 모든 파일 형식 (이미지 + 비디오 + 애니메이션)
-ALL_SUPPORTED_FORMATS = SUPPORTED_IMAGE_FORMATS.union(VIDEO_ANIMATION_EXTENSIONS)
+ALL_SUPPORTED_FORMATS = STATIC_IMAGE_FORMATS.union(RAW_EXTENSIONS).union(VIDEO_ONLY_EXTENSIONS).union(FRAME_CHECK_FORMATS)
 
 # 리스트 형태로도 제공 (일부 API에서 필요할 수 있음)
 VIDEO_ANIMATION_EXTENSIONS_LIST = list(VIDEO_ANIMATION_EXTENSIONS)
