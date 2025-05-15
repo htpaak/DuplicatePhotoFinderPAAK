@@ -40,9 +40,10 @@ class ScanWorker(QObject):
     scan_finished = pyqtSignal(int, int, list) # 총 파일 수, 스캔 완료 수, 중복 그룹 정보 전달
     error_occurred = pyqtSignal(str) # 오류 메시지 전달
 
-    def __init__(self, folder_path: str, hash_size: int = 8):
+    def __init__(self, folder_path: str, include_subfolders: bool = False, hash_size: int = 8):
         super().__init__()
         self.folder_path = folder_path
+        self.include_subfolders = include_subfolders
         self.hash_size = hash_size
         self._is_running = True # 외부에서 중단 요청 가능하도록 플래그 추가 (선택적)
 
@@ -54,29 +55,39 @@ class ScanWorker(QObject):
         grouped_files: Set[str] = set()
         processed_files_count = 0 # 실제로 처리(해싱)된 파일 수
         total_target_files = 0 # 스캔 대상 확장자를 가진 총 파일 수
+        target_files = [] # 스캔 대상 파일 목록
 
         try:
-            all_files_in_folder = os.listdir(self.folder_path)
-            target_files = [
-                f for f in all_files_in_folder
-                if os.path.isfile(os.path.join(self.folder_path, f))
-                and os.path.splitext(f)[1].lower() in SUPPORTED_FORMATS
-            ]
+            # 하위폴더 포함 여부에 따라 다른 방식으로 파일 수집
+            if self.include_subfolders:
+                # 하위폴더를 포함한 모든 파일 수집 (os.walk 사용)
+                for root, _, files in os.walk(self.folder_path):
+                    for filename in files:
+                        if os.path.splitext(filename)[1].lower() in SUPPORTED_FORMATS:
+                            file_path = os.path.join(root, filename)
+                            if os.path.isfile(file_path):
+                                target_files.append(file_path)
+            else:
+                # 현재 폴더의 파일만 수집 (기존 방식)
+                all_files_in_folder = os.listdir(self.folder_path)
+                for filename in all_files_in_folder:
+                    if os.path.isfile(os.path.join(self.folder_path, filename)) and \
+                       os.path.splitext(filename)[1].lower() in SUPPORTED_FORMATS:
+                        target_files.append(os.path.join(self.folder_path, filename))
+            
             total_target_files = len(target_files)
             self.scan_started.emit(total_target_files)
 
-            for i, filename in enumerate(target_files):
+            for i, file_path in enumerate(target_files):
                 if not self._is_running:
                     break
-
-                file_path = os.path.join(self.folder_path, filename)
 
                 # 이미 그룹화된 파일은 건너뛰기
                 if file_path in grouped_files:
                     self.progress_updated.emit(i + 1)
                     continue
                 
-                file_ext = os.path.splitext(filename)[1].lower()
+                file_ext = os.path.splitext(file_path)[1].lower()
                 img_pil = None 
                 raw_obj = None 
                 current_hash = None

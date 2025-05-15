@@ -8,7 +8,7 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), '..'))
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QSplitter, QTableView,
-    QHeaderView, QApplication # 필요한 위젯만 임포트
+    QHeaderView, QApplication, QCheckBox # 필요한 위젯만 임포트
 )
 from PyQt5.QtGui import QStandardItemModel, QIcon
 from PyQt5.QtCore import Qt
@@ -211,11 +211,20 @@ def setup_ui(window: 'MainWindow'):
     scan_status_layout = QHBoxLayout()
     window.scan_folder_button = QPushButton("Scan Folder") # window 속성으로 할당
     window.status_label = QLabel("Files scanned: 0 Duplicates found: 0") # window 속성으로 할당
+    
+    # 하위폴더포함 체크박스 추가
+    window.include_subfolders_checkbox = QCheckBox("Include Subfolders")
+    window.include_subfolders_checkbox.setToolTip("Check to scan images in all subfolders")
+    
     window.undo_button = QPushButton("Undo") # window 속성으로 할당
     window.undo_button.setObjectName("undo_button") # 객체 이름 설정
     window.undo_button.setEnabled(window.undo_manager.can_undo())
     scan_status_layout.addWidget(window.scan_folder_button)
     scan_status_layout.addWidget(window.status_label, 1)
+
+    # 하위폴더포함 체크박스를 Undo 버튼 왼쪽에 추가
+    scan_status_layout.addWidget(window.include_subfolders_checkbox)
+    scan_status_layout.addWidget(window.undo_button)
 
     # --- 피드백 버튼 추가 --- 
     window.feedback_button = QPushButton("💬")
@@ -225,7 +234,6 @@ def setup_ui(window: 'MainWindow'):
     window.feedback_button.clicked.connect(window.open_feedback_link) 
     # --- 피드백 버튼 추가 끝 --- 
 
-    scan_status_layout.addWidget(window.undo_button)
     scan_status_layout.addWidget(window.feedback_button) # Undo 버튼 옆에 피드백 버튼 추가
     duplicate_list_layout.addLayout(scan_status_layout)
 

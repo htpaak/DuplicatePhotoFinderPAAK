@@ -143,7 +143,9 @@ class MainWindow(QMainWindow):
         if folder_path:
             # 스레드 및 워커 생성
             self.scan_thread = QThread()
-            self.scan_worker = ScanWorker(folder_path)
+            # 하위폴더 포함 체크박스 상태를 ScanWorker에 전달
+            include_subfolders = self.include_subfolders_checkbox.isChecked()
+            self.scan_worker = ScanWorker(folder_path, include_subfolders)
             self.scan_worker.moveToThread(self.scan_thread)
 
             # 시그널 연결
@@ -165,14 +167,19 @@ class MainWindow(QMainWindow):
     def handle_scan_started(self, total_files: int):
         """스캔 시작 시 호출되어 총 파일 수를 저장하고 상태 메시지를 업데이트합니다."""
         self.total_files_to_scan = total_files
-        self.status_label.setText(f"Scanning... 0 / {self.total_files_to_scan}")
+        
+        # 하위폴더 포함 여부 메시지 추가
+        include_subfolder_msg = " (including subfolders)" if self.include_subfolders_checkbox.isChecked() else ""
+        self.status_label.setText(f"Scanning{include_subfolder_msg}... 0 / {self.total_files_to_scan}")
         QApplication.processEvents() # 메시지 즉시 업데이트
 
     def update_scan_progress(self, processed_count: int):
         """스캔 진행률 업데이트 슬롯"""
         if self.total_files_to_scan > 0:
+            # 하위폴더 포함 여부 메시지 추가
+            include_subfolder_msg = " (including subfolders)" if self.include_subfolders_checkbox.isChecked() else ""
             # "processed" 명시
-            self.status_label.setText(f"Scanning... {processed_count} / {self.total_files_to_scan} files processed")
+            self.status_label.setText(f"Scanning{include_subfolder_msg}... {processed_count} / {self.total_files_to_scan} files processed")
         else:
             self.status_label.setText(f"Scanning... Files processed: {processed_count}")
 

@@ -20,7 +20,8 @@ class ScanResultProcessor:
         mw = self.main_window # 편의상 짧은 변수명 사용
 
         # 스캔 완료 상태 업데이트
-        mw.status_label.setText(f"Scan complete. Found {len(duplicate_groups_with_similarity)} duplicate groups in {processed_count}/{total_files} files.")
+        include_subfolder_msg = " (including subfolders)" if mw.include_subfolders_checkbox.isChecked() else ""
+        mw.status_label.setText(f"Scan complete{include_subfolder_msg}. Found {len(duplicate_groups_with_similarity)} duplicate groups in {processed_count}/{total_files} files.")
 
         # 내부 데이터 초기화
         mw.duplicate_groups_data.clear()
