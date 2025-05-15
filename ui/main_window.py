@@ -251,6 +251,7 @@ class MainWindow(QMainWindow):
         # --- 소스 모델에서 데이터 가져오기 --- 
         representative_path_item = self.duplicate_table_model.item(row, 1) 
         member_path_item = self.duplicate_table_model.item(row, 2) 
+        similarity_item = self.duplicate_table_model.item(row, 3)
         group_id_item = self.duplicate_table_model.item(row, 4) 
         # --- 가져오기 끝 ---
 
@@ -258,6 +259,12 @@ class MainWindow(QMainWindow):
             group_id = group_id_item.text()
             current_representative = self.group_representatives.get(group_id)
             selected_member = member_path_item.text()
+            
+            # 유사도 표시 로깅 (디버깅용)
+            if similarity_item:
+                similarity_text = similarity_item.text()
+                similarity_data = similarity_item.data(Qt.UserRole + 4)
+                print(f"유사도 텍스트: {similarity_text}, 데이터: {similarity_data}")
 
             if current_representative:
                  self._update_image_info(self.left_image_label, self.left_info_label, current_representative)

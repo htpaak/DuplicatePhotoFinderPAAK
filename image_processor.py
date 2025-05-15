@@ -230,9 +230,12 @@ class ScanWorker(QObject):
                 # 비디오 중복 그룹 처리 (video_duplicates가 정의된 경우)
                 if 'video_duplicates' in locals() and video_duplicates:
                     for rep_path, dupes in video_duplicates:
-                        # 유사도 점수를 백분율로 변환
-                        members = [(dupe_path, int(similarity)) for dupe_path, similarity in dupes]
+                        # 유사도 점수 처리 - 원래의 부동 소수점 값 유지
+                        members = [(dupe_path, similarity) for dupe_path, similarity in dupes]
                         if members:
+                            print(f"비디오 중복 그룹 추가: {os.path.basename(rep_path)}, 멤버 수: {len(members)}")
+                            for mem_path, sim in members:
+                                print(f"  - {os.path.basename(mem_path)}: 유사도 {sim:.1f}%")
                             duplicate_groups_with_similarity.append((rep_path, members))
                 
                 # 최종 처리된 파일 수와 중복 그룹 목록 전달

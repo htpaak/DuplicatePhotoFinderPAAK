@@ -36,9 +36,22 @@ class ScanResultProcessor:
             if not members_with_similarity: continue
             group_id = str(uuid.uuid4()) # 임시 ID 부여 (나중에 테이블 채울 때 사용)
             temp_group_data[group_id] = {'rep': representative_path, 'members': []}
+            
+            # 파일 타입 확인 (비디오 또는 이미지)
+            file_ext = os.path.splitext(representative_path)[1].lower()
+            is_video = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.gif']
+            
             for member_path, similarity in members_with_similarity:
-                hash_bits = 64
-                percentage_similarity = max(0, round((1 - similarity / hash_bits) * 100))
+                # 처리 방식을 파일 유형에 따라 분리
+                if is_video:
+                    # 비디오 파일은 이미 0-100 범위의 유사도 값을 갖고 있음
+                    percentage_similarity = float(similarity)
+                    print(f"비디오 유사도 처리: {os.path.basename(member_path)} -> {percentage_similarity:.1f}%")
+                else:
+                    # 이미지 파일은 해시 거리를 백분율로 변환
+                    hash_bits = 64
+                    percentage_similarity = max(0, round((1 - similarity / hash_bits) * 100))
+                
                 # 대표/멤버 경로, 유사도%, 임시 그룹 ID 저장
                 all_duplicate_pairs.append((representative_path, member_path, percentage_similarity, group_id, similarity))
                 # 임시 그룹 데이터에도 멤버 추가 (나중에 Rank 와 함께 저장하기 위함)
@@ -90,7 +103,17 @@ class ScanResultProcessor:
              item_representative = QStandardItem(rep_path)
              item_member = QStandardItem(mem_path)
              
-             similarity_text = f"{percent_sim}%"
+             # 파일 타입에 따라 유사도 표시 형식 변경
+             file_ext = os.path.splitext(rep_path)[1].lower()
+             is_video = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.gif']
+             
+             if is_video:
+                 # 비디오 파일의 경우 소수점 한 자리까지 표시
+                 similarity_text = f"{percent_sim:.1f}%"
+             else:
+                 # 이미지 파일은 정수로 표시
+                 similarity_text = f"{int(percent_sim)}%"
+                 
              item_similarity = QStandardItem(similarity_text)
              item_similarity.setData(percent_sim, Qt.UserRole + 4)
              item_similarity.setTextAlignment(Qt.AlignCenter)

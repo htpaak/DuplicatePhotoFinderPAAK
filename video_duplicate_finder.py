@@ -68,8 +68,12 @@ class VideoDuplicateFinder:
         self.cache[video_path] = frames
         return frames
         
-    def compare_signatures(self, sig1, sig2):
+    def compare_signatures(self, sig1, sig2, path1=None, path2=None):
         """두 비디오 시그니처의 유사도를 비교합니다 (0-100% 범위)"""
+        # 같은 파일명인 경우 100% 유사도 반환 (선택적)
+        if path1 and path2 and os.path.basename(path1) == os.path.basename(path2):
+            return 100.0
+            
         if not sig1 or not sig2:
             return 0
             
@@ -84,7 +88,20 @@ class VideoDuplicateFinder:
             similarities.append(similarity)
             
         # 전체 프레임의 평균 유사도 반환
-        return sum(similarities) / len(similarities)
+        avg_similarity = sum(similarities) / len(similarities)
+        
+        # 파일 크기가 거의 같으면 유사도 보정
+        if path1 and path2:
+            try:
+                size1 = os.path.getsize(path1)
+                size2 = os.path.getsize(path2)
+                # 크기 차이가 5% 이내이면 유사도 보정
+                if abs(size1 - size2) / max(size1, size2) < 0.05:
+                    avg_similarity = min(100, avg_similarity * 1.2)  # 20% 증가 (최대 100)
+            except:
+                pass
+                
+        return avg_similarity
         
     def find_duplicates(self, video_paths):
         """
@@ -118,8 +135,8 @@ class VideoDuplicateFinder:
                 if path2 in processed_files:
                     continue
                     
-                # 유사도 계산
-                similarity = self.compare_signatures(sig1, sig2)
+                # 유사도 계산 (경로 정보도 함께 전달)
+                similarity = self.compare_signatures(sig1, sig2, path1, path2)
                 print(f"비디오 유사도: {os.path.basename(path1)} vs {os.path.basename(path2)} = {similarity:.1f}%")
                 
                 # 임계값 이상이면 중복으로 간주
