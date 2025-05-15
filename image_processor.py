@@ -201,22 +201,56 @@ class ScanWorker(QObject):
                     else:
                         # Pillow 로직 (WebP 애니메이션 체크는 이미 앞에서 처리됨)
                         img_pil = Image.open(file_path)
+                        
+                        # WebP 이미지의 경우 RGB 모드로 변환하여 처리
+                        if file_ext == '.webp':
+                            try:
+                                # WebP 이미지 모드 확인
+                                img_mode = img_pil.mode
+                                
+                                # RGBA, LA 등의 모드에서 RGB(L)로 변환
+                                if 'A' in img_mode:  # 알파 채널이 있는 경우
+                                    img_pil = img_pil.convert('RGB')
+                                elif img_mode != 'RGB' and img_mode != 'L':
+                                    # RGB나 L이 아닌 경우에도 변환
+                                    img_pil = img_pil.convert('RGB')
+                            except Exception as webp_err:
+                                print(f"WebP 변환 중 오류: {file_path} - {webp_err}")
 
                     # img_pil 객체가 생성되었으면 해시 계산 진행
                     if img_pil:
                         processed_files_count += 1
-                        current_hash = imagehash.phash(img_pil, hash_size=self.hash_size)
+                        
+                        # 모든 이미지 포맷에 대해 동일하게 perceptual hash 사용
+                        try:
+                            current_hash = imagehash.phash(img_pil, hash_size=self.hash_size)
+                        except Exception as hash_err:
+                            print(f"해시 생성 중 오류: {file_path} - {hash_err}")
+                            continue  # 해시 생성 실패 시 다음 파일로
 
                         found_group = False
                         # 기존 해시 그룹들과 비교
                         for existing_hash, file_list_with_similarity in hashes_to_files.items():
-                            similarity = current_hash - existing_hash # 해시 거리 계산
+                            # 대표 이미지 경로 확인
+                            rep_path = file_list_with_similarity[0][0]
+                            rep_ext = os.path.splitext(rep_path)[1].lower()
+                            
+                            # WebP 이미지 간 비교인 경우에도 일반 해시 거리 사용
+                            similarity = current_hash - existing_hash
+                            
+                            # WebP 파일 비교인 경우 디버깅을 위한 로그 추가
+                            if file_ext == '.webp' and rep_ext == '.webp':
+                                print(f"WebP 비교: {os.path.basename(file_path)} vs {os.path.basename(rep_path)}, 해시 거리: {similarity}")
+                            
+                            # 모든 이미지에 대해 동일한 임계값 적용
                             if similarity <= HASH_THRESHOLD:
-                                # 유사 그룹 발견 시 현재 파일과 유사도 점수 추가
+                                # WebP 파일인 경우 로그 메시지 추가
+                                if file_ext == '.webp' and rep_ext == '.webp':
+                                    print(f"WebP 유사 이미지 추가: {os.path.basename(file_path)}, 유사도: {similarity}")
                                 file_list_with_similarity.append((file_path, similarity))
-                                grouped_files.add(file_path) # 그룹화된 파일로 등록
+                                grouped_files.add(file_path)
                                 found_group = True
-                                break # 첫 번째 매칭 그룹에만 추가
+                                break
 
                         # 유사 그룹 없으면 새로운 그룹 생성 (대표 파일, 유사도 0)
                         if not found_group:
@@ -260,11 +294,29 @@ class ScanWorker(QObject):
                     if len(file_list_with_similarity) > 1: # 그룹 크기가 2 이상인 경우만
                         # 첫 번째 파일을 대표로 설정
                         representative_path, _ = file_list_with_similarity[0]
+                        rep_ext = os.path.splitext(representative_path)[1].lower()
+                        
                         # 멤버 목록 생성 (대표 제외, 경로와 유사도 점수 포함)
                         members_with_similarity = []
                         # 리스트의 두 번째 요소부터 순회
                         for path, similarity in file_list_with_similarity[1:]:
-                             members_with_similarity.append((path, similarity))
+                             # WebP 파일 간 비교의 경우 유사도를 100%에 가깝게 조정
+                             member_ext = os.path.splitext(path)[1].lower()
+                             if rep_ext == '.webp' and member_ext == '.webp':
+                                # WebP 파일인 경우 유사도 점수를 백분율로 변환 (100% 기준)
+                                # 0에 가까울수록 유사함 (최대값 HASH_THRESHOLD)
+                                if similarity == 0:
+                                    # 완전 동일한 경우
+                                    adjusted_similarity = 100
+                                else:
+                                    # 0~HASH_THRESHOLD 범위를 100%~0%로 변환
+                                    adjusted_similarity = max(100 - (similarity * 100 / HASH_THRESHOLD), 0)
+                                print(f"WebP 그룹 추가: {os.path.basename(path)} → 유사도 변환: {similarity} → {adjusted_similarity}%")
+                                members_with_similarity.append((path, adjusted_similarity))
+                             else:
+                                 # 일반 이미지는 기존 유사도 점수 사용
+                                 members_with_similarity.append((path, similarity))
+                        
                         # 멤버가 있으면 그룹 추가
                         if members_with_similarity:
                              duplicate_groups_with_similarity.append(
@@ -274,8 +326,22 @@ class ScanWorker(QObject):
                 # 비디오 중복 그룹 처리 (video_duplicates가 정의된 경우)
                 if 'video_duplicates' in locals() and video_duplicates:
                     for rep_path, dupes in video_duplicates:
+                        rep_ext = os.path.splitext(rep_path)[1].lower()
                         # 유사도 점수 처리 - 원래의 부동 소수점 값 유지
-                        members = [(dupe_path, similarity) for dupe_path, similarity in dupes]
+                        members = []
+                        for dupe_path, similarity in dupes:
+                            member_ext = os.path.splitext(dupe_path)[1].lower()
+                            
+                            # WebP 파일 처리 (애니메이션 WebP인 경우 video_duplicates에 들어올 수 있음)
+                            if rep_ext == '.webp' and member_ext == '.webp':
+                                # similarity는 이미 백분율(%)로 표현되어 있지만, 실수로 정수로 변환
+                                adjusted_similarity = int(similarity)
+                                members.append((dupe_path, adjusted_similarity))
+                                print(f"WebP 애니메이션 중복: {os.path.basename(dupe_path)} (유사도: {adjusted_similarity}%)")
+                            else:
+                                # 일반 비디오/애니메이션은 그대로 사용
+                                members.append((dupe_path, similarity))
+                        
                         if members:
                             print(f"비디오 중복 그룹 추가: {os.path.basename(rep_path)}, 멤버 수: {len(members)}")
                             for mem_path, sim in members:
