@@ -8,38 +8,23 @@ import rawpy # rawpy 임포트
 # 비디오 처리 임포트 추가
 from video_processor import VideoProcessor
 from video_duplicate_finder import VideoDuplicateFinder
+# 파일 형식 정의 모듈 임포트
+from supported_formats import (
+    SUPPORTED_IMAGE_FORMATS, RAW_EXTENSIONS, VIDEO_ANIMATION_EXTENSIONS, 
+    ALL_SUPPORTED_FORMATS, HASH_THRESHOLD, VIDEO_SIMILARITY_THRESHOLD
+)
 
-# Pillow에서 일반적으로 지원하는 정적 이미지 형식 추가
-SUPPORTED_FORMATS = {
-    # 기존 형식
-    '.png', '.jpg', '.jpeg', '.bmp', '.webp',
-    # 추가 형식
-    '.tif', '.tiff', '.ico', '.pcx',
-    '.ppm', '.pgm', '.pbm', '.tga',
-    # RAW 형식 (일반적인 것들)
-    '.cr2', '.cr3', '.nef', '.arw', '.dng', '.rw2', '.orf',
-    '.raf', '.pef', '.srw', '.kdc', '.raw'
-}
-
-# RAW 확장자만 따로 관리 (파일 처리 분기용)
-RAW_EXTENSIONS = {
-    '.cr2', '.cr3', '.nef', '.arw', '.dng', '.rw2', '.orf',
-    '.raf', '.pef', '.srw', '.kdc', '.raw'
-}
-
-# 비디오 확장자 추가
-VIDEO_EXTENSIONS = {
-    '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', 
-    '.m4v', '.mpg', '.mpeg', '.3gp', '.gif'
-}
+# 기존 중복 정의 제거하고 임포트된 상수 사용
+SUPPORTED_FORMATS = SUPPORTED_IMAGE_FORMATS
+VIDEO_EXTENSIONS = VIDEO_ANIMATION_EXTENSIONS
 
 # 지원하는 모든 파일 형식 (이미지 + 비디오)
-ALL_SUPPORTED_FORMATS = SUPPORTED_FORMATS.union(VIDEO_EXTENSIONS)
+ALL_SUPPORTED_FORMATS = SUPPORTED_IMAGE_FORMATS.union(VIDEO_ANIMATION_EXTENSIONS)
 
-# 해시 유사도 임계값
-HASH_THRESHOLD = 5
-# 비디오 유사도 임계값
-VIDEO_SIMILARITY_THRESHOLD = 85.0
+# 해시 유사도 임계값 - 모듈에서 임포트함으로 제거
+# HASH_THRESHOLD = 5
+# 비디오 유사도 임계값 - 모듈에서 임포트함으로 제거
+# VIDEO_SIMILARITY_THRESHOLD = 85.0
 
 # 새로운 시그널 데이터 타입 정의 (가독성 위해)
 # List[Tuple[str, List[Tuple[str, int]]]]

@@ -1,11 +1,13 @@
 import os
 import numpy as np
 from video_processor import VideoProcessor
+# 파일 형식 정의 모듈 임포트
+from supported_formats import VIDEO_ANIMATION_EXTENSIONS, VIDEO_SIMILARITY_THRESHOLD
 
 class VideoDuplicateFinder:
     """비디오 중복을 찾기 위한 클래스"""
     
-    def __init__(self, frame_positions=None, similarity_threshold=85.0, output_size=(16, 16)):
+    def __init__(self, frame_positions=None, similarity_threshold=None, output_size=(16, 16)):
         """
         비디오 중복 찾기 엔진을 초기화합니다.
         
@@ -16,7 +18,7 @@ class VideoDuplicateFinder:
         """
         self.video_processor = VideoProcessor()
         self.frame_positions = frame_positions or [10, 30, 50, 70, 90]  # 비디오 길이의 퍼센트 위치
-        self.similarity_threshold = similarity_threshold
+        self.similarity_threshold = similarity_threshold or VIDEO_SIMILARITY_THRESHOLD
         self.output_size = output_size
         self.cache = {}  # 파일 경로 -> 시그니처 캐시
         
@@ -25,14 +27,9 @@ class VideoDuplicateFinder:
         if not os.path.isfile(file_path):
             return False
             
-        # 일반적인 비디오 확장자 목록
-        video_extensions = [
-            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', 
-            '.m4v', '.mpg', '.mpeg', '.3gp', '.gif'
-        ]
-        
+        # 모듈에서 정의된 비디오 및 애니메이션 확장자 사용
         _, ext = os.path.splitext(file_path.lower())
-        return ext in video_extensions
+        return ext in VIDEO_ANIMATION_EXTENSIONS
         
     def get_video_signature(self, video_path):
         """

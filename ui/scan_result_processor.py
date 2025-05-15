@@ -4,6 +4,8 @@ from PyQt5.QtGui import QStandardItem
 from PyQt5.QtCore import Qt
 from PyQt5.QtWidgets import QApplication # processEvents 용
 from typing import TYPE_CHECKING, Dict, List, Tuple
+# 파일 형식 정의 모듈 임포트
+from supported_formats import VIDEO_ANIMATION_EXTENSIONS
 
 # MainWindow 타입 힌트만 임포트 (순환 참조 방지)
 if TYPE_CHECKING:
@@ -39,7 +41,7 @@ class ScanResultProcessor:
             
             # 파일 타입 확인 (비디오 또는 이미지)
             file_ext = os.path.splitext(representative_path)[1].lower()
-            is_video = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.gif']
+            is_video = file_ext in VIDEO_ANIMATION_EXTENSIONS
             
             for member_path, similarity in members_with_similarity:
                 # 처리 방식을 파일 유형에 따라 분리
@@ -105,7 +107,7 @@ class ScanResultProcessor:
              
              # 파일 타입에 따라 유사도 표시 형식 변경
              file_ext = os.path.splitext(rep_path)[1].lower()
-             is_video = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', '.m4v', '.mpg', '.mpeg', '.3gp', '.gif']
+             is_video = file_ext in VIDEO_ANIMATION_EXTENSIONS
              
              if is_video:
                  # 비디오 파일의 경우 소수점 한 자리까지 표시
