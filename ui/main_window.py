@@ -94,18 +94,25 @@ class MainWindow(QMainWindow):
 
     def _update_image_info(self, image_label: ImageLabel, info_label: QLabel, file_path: str):
         """정보 레이블을 업데이트하고 ImageLabel에 Pixmap을 설정합니다."""
-        # ImageLabel에 Pixmap 설정 시도 (이제 RAW/TGA 처리 가능)
+        # ImageLabel에 Pixmap 설정 시도 (이제 RAW/TGA/비디오 처리 가능)
         success = image_label.setPixmapFromFile(file_path)
 
-        if success and image_label._original_pixmap: # 성공했고 원본 pixmap이 있으면 정보 업데이트
-            pixmap = image_label._original_pixmap # 저장된 원본 사용
+        if success:
             try:
                 file_size_kb = round(os.path.getsize(file_path) / 1024)
-                img_format = os.path.splitext(file_path)[1].upper()[1:]
+                file_ext = os.path.splitext(file_path)[1].upper()[1:]
                 filename = os.path.basename(file_path)
-                # 원본 이미지 크기를 정보에 표시
-                info_text = f"{img_format} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB\n{filename}"
-                info_label.setText(info_text)
+                
+                # 비디오 파일인 경우 다른 형식으로 정보 표시
+                if image_label.is_video:
+                    # 비디오 정보 표시
+                    info_text = f"VIDEO {file_ext} {file_size_kb} KB\n{filename}"
+                    info_label.setText(info_text)
+                elif image_label._original_pixmap: # 이미지 파일이고 pixmap이 있는 경우
+                    pixmap = image_label._original_pixmap # 저장된 원본 사용
+                    # 원본 이미지 크기를 정보에 표시
+                    info_text = f"{file_ext} {pixmap.width()} x {pixmap.height()} {file_size_kb} KB\n{filename}"
+                    info_label.setText(info_text)
             except FileNotFoundError:
                 info_label.setText(f"File info error: Not found\n{os.path.basename(file_path)}")
             except Exception as e:

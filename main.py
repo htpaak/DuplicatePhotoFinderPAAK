@@ -1,6 +1,7 @@
 import sys
 import os
 import ctypes # 추가
+import argparse # 인수 파싱을 위해 추가
 # import winshell # 바로 가기 생성 안 하므로 제거
 # import pythoncom # 바로 가기 생성 안 하므로 제거
 # from win32com.client import Dispatch # 바로 가기 생성 안 하므로 제거
@@ -16,6 +17,10 @@ from PyQt5.QtWidgets import QApplication
 from PyQt5.QtGui import QIcon # QIcon 임포트 추가
 from PyQt5.QtCore import Qt
 from ui.main_window import MainWindow
+
+# 비디오 중복 찾기 테스트를 위한 임포트
+from video_processor import VideoProcessor
+from video_duplicate_finder import VideoDuplicateFinder
 
 # --- 설정 변수 정의 (바로 가기 관련 변수 제거) ---
 # APP_NAME = "DuplicatePhotoFinder" # MYAPPID 에서만 사용
@@ -37,6 +42,95 @@ ICON_PATH = os.path.join(project_root, "assets", "icon.ico")
 #     SHORTCUT_PATH = None
 # --- 설정 변수 정의 끝 ---
 
+# 비디오 중복 찾기 테스트 함수 추가
+def run_video_duplicate_test(test_video_path, test_folder_path=None):
+    """비디오 중복 찾기 기능을 테스트합니다."""
+    if test_folder_path is None:
+        test_folder_path = os.path.dirname(test_video_path)
+    
+    print("\n===== 비디오 중복 찾기 테스트 시작 =====")
+    
+    # PyAV 라이브러리 확인
+    print("\nPyAV 라이브러리 확인 중...")
+    if not VideoProcessor.check_av():
+        print("✗ PyAV 라이브러리를 찾을 수 없습니다. 설치가 필요합니다.")
+        print("  - 설치 방법: pip install av")
+        return False
+    print("✓ PyAV 라이브러리가 정상적으로 로드되었습니다.")
+    
+    # 비디오 프로세서 테스트
+    print("\nVideoProcessor 테스트 중...")
+    if not os.path.exists(test_video_path):
+        print(f"✗ 테스트 비디오 파일이 존재하지 않습니다: {test_video_path}")
+        return False
+    
+    processor = VideoProcessor()
+    
+    # 비디오 길이 확인
+    duration = processor.get_video_duration(test_video_path)
+    print(f"✓ 비디오 길이: {duration:.2f}초")
+    
+    # 프레임 추출 테스트
+    positions = [10, 50, 90]  # 10%, 50%, 90% 위치
+    print(f"✓ {', '.join([f'{p}%' for p in positions])} 위치에서 프레임 추출 중...")
+    
+    frames = processor.extract_multiple_frames(test_video_path, positions)
+    if not frames or len(frames) == 0:
+        print("✗ 프레임 추출 실패")
+        return False
+    
+    print(f"✓ {len(frames)}개 프레임 추출 완료")
+    for i, frame in enumerate(frames):
+        print(f"  - 프레임 {i+1}: 크기 {frame.shape}, 평균 밝기: {frame.mean():.1f}")
+    
+    # VideoDuplicateFinder 테스트
+    print("\nVideoDuplicateFinder 테스트 중...")
+    if not os.path.exists(test_folder_path) or not os.path.isdir(test_folder_path):
+        print(f"✗ 테스트 폴더가 존재하지 않습니다: {test_folder_path}")
+        return False
+    
+    finder = VideoDuplicateFinder()
+    
+    # 폴더 내 모든 비디오 파일 찾기
+    video_files = []
+    for root, _, files in os.walk(test_folder_path):
+        for file in files:
+            file_path = os.path.join(root, file)
+            if finder.is_video_file(file_path):
+                video_files.append(file_path)
+    
+    if not video_files:
+        print(f"✗ 폴더 내에 비디오 파일이 없습니다: {test_folder_path}")
+        return False
+    
+    print(f"✓ {len(video_files)}개 비디오 파일 발견")
+    
+    # 중복 찾기 실행
+    print("✓ 중복 비디오 검색 중...")
+    duplicates = finder.find_duplicates(video_files)
+    
+    # 결과 출력
+    if duplicates:
+        print(f"✓ {len(duplicates)}개 중복 그룹 발견:")
+        for i, (original, dupes) in enumerate(duplicates):
+            print(f"\n그룹 {i+1}:")
+            print(f"  원본: {os.path.basename(original)}")
+            print("  중복:")
+            for dupe, similarity in dupes:
+                print(f"    - {os.path.basename(dupe)} (유사도: {similarity:.1f}%)")
+    else:
+        print("✓ 중복 비디오가 발견되지 않았습니다.")
+    
+    print("\n===== 비디오 중복 찾기 테스트 완료 =====")
+    return True
+
+# 명령줄 인수 파싱 함수 추가
+def parse_arguments():
+    """명령줄 인수를 파싱합니다."""
+    parser = argparse.ArgumentParser(description="DuplicatePhotoFinderPAAK - 이미지 및 비디오 중복 찾기 프로그램")
+    parser.add_argument("--test-video", type=str, help="비디오 중복 찾기 테스트에 사용할 비디오 파일")
+    parser.add_argument("--test-folder", type=str, help="비디오 중복 찾기 테스트에 사용할 폴더 (선택 사항)")
+    return parser.parse_args()
 
 # DPI 스케일링 활성화 (QApplication 생성 전 호출)
 QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
@@ -61,9 +155,17 @@ setup_logging() # 항상 호출 (내부에서 조건 확인)
 #    ...
 # --- 바로 가기 생성 끝 ---
 
-
 # 애플리케이션의 메인 로직
 if __name__ == '__main__':
+    # 명령줄 인수 파싱
+    args = parse_arguments()
+    
+    # 비디오 중복 찾기 테스트 모드 확인
+    if args.test_video:
+        run_video_duplicate_test(args.test_video, args.test_folder)
+        sys.exit(0)
+    
+    # 일반 모드 - GUI 시작
     app = QApplication(sys.argv)
     
     # --- 애플리케이션 아이콘 설정 ---

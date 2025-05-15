@@ -1,12 +1,12 @@
 import os
 from PyQt5.QtWidgets import QLabel
-from PyQt5.QtGui import QPixmap, QResizeEvent, QImage
+from PyQt5.QtGui import QPixmap, QResizeEvent, QImage, QPainter, QIcon
 from PyQt5.QtCore import Qt, QSize
 from typing import Optional
 from PIL import Image
 import rawpy
 import numpy as np
-from image_processor import RAW_EXTENSIONS
+from image_processor import RAW_EXTENSIONS, VIDEO_EXTENSIONS
 
 class ImageLabel(QLabel):
     """동적 크기 조절 및 비율 유지를 지원하는 이미지 레이블"""
@@ -16,9 +16,10 @@ class ImageLabel(QLabel):
         self.setAlignment(Qt.AlignCenter) # 기본 정렬 설정
         self.setMinimumSize(100, 100) # 최소 크기 설정 (예시)
         self.setObjectName("ImageLabel") # 스타일시트 적용 위한 객체 이름
+        self.is_video = False # 비디오 파일인지 여부
 
     def setPixmapFromFile(self, file_path: str) -> bool:
-        """파일 경로로부터 Pixmap을 로드하고 원본을 저장합니다. RAW 및 TGA 지원 추가."""
+        """파일 경로로부터 Pixmap을 로드하고 원본을 저장합니다. RAW, TGA 및 비디오 파일 지원."""
         if not file_path or not os.path.exists(file_path):
             self._original_pixmap = None
             self.setText("File Not Found")
@@ -26,10 +27,42 @@ class ImageLabel(QLabel):
 
         pixmap = None
         file_ext = os.path.splitext(file_path)[1].lower()
+        self.is_video = file_ext in VIDEO_EXTENSIONS # 비디오 파일 여부 저장
 
         try:
+            # 비디오 파일 처리
+            if self.is_video:
+                # 비디오용 기본 아이콘 또는 썸네일 표시
+                try:
+                    # PyAV를 사용하여 첫 프레임 추출 시도 (여기서는 아이콘으로 대체)
+                    video_icon = QPixmap(300, 300) # 빈 pixmap 생성
+                    video_icon.fill(Qt.transparent) # 배경 투명하게
+                    
+                    # 기본 비디오 아이콘 그리기
+                    painter = QPainter(video_icon)
+                    painter.setRenderHint(QPainter.Antialiasing)
+                    
+                    # 비디오 아이콘 중앙에 그리기
+                    icon = QIcon.fromTheme("video-x-generic")
+                    if icon.isNull():
+                        # 테마 아이콘이 없으면 텍스트로 대체
+                        painter.setPen(Qt.white)
+                        painter.drawText(video_icon.rect(), Qt.AlignCenter, "VIDEO")
+                    else:
+                        icon.paint(painter, video_icon.rect())
+                    
+                    painter.end()
+                    pixmap = video_icon
+                    
+                    # 파일명 표시
+                    self.setText(f"VIDEO: {os.path.basename(file_path)}")
+                except Exception as e:
+                    print(f"비디오 아이콘 생성 오류: {e}")
+                    self.setText(f"VIDEO FILE\n{os.path.basename(file_path)}")
+                    return False
+                
             # RAW 또는 TGA 파일 처리
-            if file_ext in RAW_EXTENSIONS or file_ext == '.tga':
+            elif file_ext in RAW_EXTENSIONS or file_ext == '.tga':
                 img_pil = None
                 raw_obj = None
                 qimage = None # QImage 객체 초기화
@@ -98,7 +131,7 @@ class ImageLabel(QLabel):
             else:
                 self._original_pixmap = None
                 # pixmap 생성 실패 메시지는 위에서 처리됨
-                if not (file_ext in RAW_EXTENSIONS or file_ext == '.tga'): # 일반 파일 로드 실패 시 메시지 설정
+                if not (file_ext in RAW_EXTENSIONS or file_ext == '.tga' or self.is_video): # 일반 파일 로드 실패 시 메시지 설정
                      self.setText(f"Invalid Image File\n{os.path.basename(file_path)}")
                 return False
 
@@ -135,5 +168,6 @@ class ImageLabel(QLabel):
     def clear(self):
         """이미지와 원본 Pixmap을 초기화합니다."""
         self._original_pixmap = None
+        self.is_video = False
         super().clear()
         self.setText("Image Area") # 초기 텍스트 설정 

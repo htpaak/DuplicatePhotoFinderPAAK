@@ -1,0 +1,132 @@
+import os
+import numpy as np
+from video_processor import VideoProcessor
+
+class VideoDuplicateFinder:
+    """비디오 중복을 찾기 위한 클래스"""
+    
+    def __init__(self, frame_positions=None, similarity_threshold=85.0, output_size=(16, 16)):
+        """
+        비디오 중복 찾기 엔진을 초기화합니다.
+        
+        매개변수:
+            frame_positions: 비디오의 위치 백분율 목록 (기본값은 5개 지점)
+            similarity_threshold: 중복으로 간주할 유사도 임계값 (기본값 85%)
+            output_size: 추출할 프레임의 크기 (기본값 16x16)
+        """
+        self.video_processor = VideoProcessor()
+        self.frame_positions = frame_positions or [10, 30, 50, 70, 90]  # 비디오 길이의 퍼센트 위치
+        self.similarity_threshold = similarity_threshold
+        self.output_size = output_size
+        self.cache = {}  # 파일 경로 -> 시그니처 캐시
+        
+    def is_video_file(self, file_path):
+        """파일이 지원되는 비디오 형식인지 확인합니다"""
+        if not os.path.isfile(file_path):
+            return False
+            
+        # 일반적인 비디오 확장자 목록
+        video_extensions = [
+            '.mp4', '.avi', '.mkv', '.mov', '.wmv', '.flv', '.webm', 
+            '.m4v', '.mpg', '.mpeg', '.3gp', '.gif'
+        ]
+        
+        _, ext = os.path.splitext(file_path.lower())
+        return ext in video_extensions
+        
+    def get_video_signature(self, video_path):
+        """
+        비디오 파일의 시그니처(대표 프레임의 배열)를 생성합니다.
+        캐싱을 통해 이미 처리된 비디오는 다시 처리하지 않습니다.
+        """
+        # 캐시에 있으면 캐시된 시그니처 반환
+        if video_path in self.cache:
+            return self.cache[video_path]
+            
+        if not self.is_video_file(video_path):
+            return None
+            
+        # 여러 위치에서 프레임 추출
+        frames = self.video_processor.extract_multiple_frames(
+            video_path, 
+            self.frame_positions,
+            self.output_size
+        )
+        
+        # 추출된 프레임이 없거나 너무 적으면 처리하지 않음
+        if not frames or len(frames) < 3:  # 최소 3개 이상의 프레임 필요
+            return None
+            
+        # 너무 어두운 프레임 개수 확인
+        dark_frames = sum(1 for frame in frames if self.video_processor.is_frame_too_dark(frame))
+        if dark_frames > len(frames) / 2:  # 절반 이상의 프레임이 어두우면 처리하지 않음
+            print(f"비디오가 너무 어둡습니다: {video_path}")
+            return None
+            
+        # 시그니처 캐싱
+        self.cache[video_path] = frames
+        return frames
+        
+    def compare_signatures(self, sig1, sig2):
+        """두 비디오 시그니처의 유사도를 비교합니다 (0-100% 범위)"""
+        if not sig1 or not sig2:
+            return 0
+            
+        # 프레임 수가 다르면 가능한 프레임끼리만 비교
+        min_frames = min(len(sig1), len(sig2))
+        if min_frames == 0:
+            return 0
+            
+        similarities = []
+        for i in range(min_frames):
+            similarity = self.video_processor.calculate_frame_similarity(sig1[i], sig2[i])
+            similarities.append(similarity)
+            
+        # 전체 프레임의 평균 유사도 반환
+        return sum(similarities) / len(similarities)
+        
+    def find_duplicates(self, video_paths):
+        """
+        여러 비디오 파일 중 중복된 파일을 찾아 그룹화합니다.
+        
+        반환값:
+            중복 그룹 목록. 각 그룹은 (대표 파일 경로, [(중복 파일 경로, 유사도)])로 구성됩니다.
+        """
+        # 비디오 시그니처 생성
+        signatures = {}
+        for path in video_paths:
+            if self.is_video_file(path):
+                sig = self.get_video_signature(path)
+                if sig:
+                    signatures[path] = sig
+        
+        # 중복 그룹 생성
+        duplicate_groups = []
+        processed_files = set()
+        
+        # 모든 비디오 쌍을 비교하여 중복 찾기
+        for i, (path1, sig1) in enumerate(signatures.items()):
+            if path1 in processed_files:
+                continue
+                
+            # 현재 파일이 다른 파일과 중복인지 확인
+            duplicates = []
+            
+            for path2, sig2 in list(signatures.items())[i+1:]:
+                if path2 in processed_files:
+                    continue
+                    
+                # 유사도 계산
+                similarity = self.compare_signatures(sig1, sig2)
+                
+                # 임계값 이상이면 중복으로 간주
+                if similarity >= self.similarity_threshold:
+                    duplicates.append((path2, similarity))
+                    processed_files.add(path2)
+            
+            # 중복이 있으면 그룹 생성
+            if duplicates:
+                duplicate_groups.append((path1, duplicates))
+                processed_files.add(path1)
+        
+        return duplicate_groups 
