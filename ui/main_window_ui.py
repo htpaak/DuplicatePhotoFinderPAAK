@@ -282,9 +282,8 @@ def setup_ui(window: 'MainWindow'):
     splitter = QSplitter(Qt.Vertical)
     splitter.addWidget(image_comparison_frame)
     splitter.addWidget(duplicate_list_frame)
-    # 초기 크기 비율 재조정 (상단 약 520, 하단 약 130 - 상단 80%)
-    # window.height() 가 이 시점에는 유효하지 않을 수 있으므로 고정값 유지
-    splitter.setSizes([520, 130]) 
+    # 초기 크기 비율 재조정 (상단 약 455, 하단 약 195 - 상단 70%)
+    splitter.setSizes([455, 195]) 
     main_layout.addWidget(splitter)
 
     # 시그널 연결은 MainWindow.__init__ 에서 수행 
