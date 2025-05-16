@@ -198,18 +198,39 @@ class MainWindow(QMainWindow):
         
         # 하위폴더 포함 여부 메시지 추가
         include_subfolder_msg = " (including subfolders)" if self.include_subfolders_checkbox.isChecked() else ""
-        self.status_label.setText(f"Scanning{include_subfolder_msg}... 0 / {self.total_files_to_scan}")
+        
+        # 총 파일 수가 0인 경우는 파일 수집 단계로 간주
+        if total_files == 0:
+            self.status_label.setText(f"Preparing to scan{include_subfolder_msg}...")
+        else:
+            self.status_label.setText(f"Scanning{include_subfolder_msg}... 0 / {self.total_files_to_scan}")
+        
         QApplication.processEvents() # 메시지 즉시 업데이트
 
     def update_scan_progress(self, processed_count: int):
         """스캔 진행률 업데이트 슬롯"""
+        # 하위폴더 포함 여부 메시지 추가
+        include_subfolder_msg = " (including subfolders)" if self.include_subfolders_checkbox.isChecked() else ""
+        
+        # 음수 값은 폴더 검색 중임을 나타냄
+        if processed_count < 0:
+            if processed_count == -1:
+                # 초기 폴더 검색 시작
+                self.status_label.setText(f"Searching folders{include_subfolder_msg}...")
+            else:
+                # 폴더 검색 진행 중 (개수는 양수로 변환)
+                folder_count = abs(processed_count)
+                self.status_label.setText(f"Searching folders{include_subfolder_msg}... ({folder_count} folders processed)")
+            QApplication.processEvents()  # UI 즉시 업데이트
+            return
+        
+        # 일반적인 파일 스캔 진행 상황 표시
         if self.total_files_to_scan > 0:
-            # 하위폴더 포함 여부 메시지 추가
-            include_subfolder_msg = " (including subfolders)" if self.include_subfolders_checkbox.isChecked() else ""
             # "processed" 명시
             self.status_label.setText(f"Scanning{include_subfolder_msg}... {processed_count} / {self.total_files_to_scan} files processed")
         else:
             self.status_label.setText(f"Scanning... Files processed: {processed_count}")
+        QApplication.processEvents()  # UI 즉시 업데이트
 
     def handle_scan_error(self, error_message: str):
         """스캔 오류 처리 슬롯"""

@@ -222,37 +222,68 @@ class VideoProcessor:
             if frame is not None:
                 frames.append(frame)
         
-        # 최소 1개 이상의 프레임을 확보하기 위한 추가 시도
-        if not frames:
-            # 다른 위치에서 추가로 시도
+        # 최소 3개의 프레임 확보 시도 (기존 방식 개선)
+        if len(frames) < 3:
+            # 더 많은 위치에서 시도
             additional_positions = [5, 15, 25, 35, 45, 55, 65, 75, 85, 95]
             for pos in additional_positions:
                 if pos not in positions_percent:
                     frame = self.extract_frame_at_percent(video_path, pos, output_size)
                     if frame is not None:
-                        frames.append(frame)
-                        if len(frames) >= 3:  # 최소 3개 확보되면 중단
-                            break
+                        # 이미 추출된 프레임과 너무 유사한지 확인 (중복 프레임 방지)
+                        is_duplicate = False
+                        for existing_frame in frames:
+                            similarity = self.calculate_frame_similarity(existing_frame, frame)
+                            if similarity > 95:  # 95% 이상 유사하면 중복으로 간주
+                                is_duplicate = True
+                                break
+                        
+                        if not is_duplicate:
+                            frames.append(frame)
+                            if len(frames) >= 3:  # 최소 3개 확보되면 중단
+                                break
         
-        # 여전히 프레임이 없으면 첫 키프레임만 추출 시도
-        if not frames:
+        # 여전히 프레임이 부족한 경우 (최소 3개 필요)
+        if frames and len(frames) < 3:
             try:
-                with av.open(video_path) as container:
-                    stream = next((s for s in container.streams if s.type == 'video'), None)
-                    if stream:
-                        container.seek(0)
-                        for frame in container.decode(stream):
-                            img = frame.to_image()
-                            img = img.resize(output_size)
-                            img = img.convert('L')
-                            frames.append(np.array(img))
-                            frames.append(np.array(img))  # 같은 프레임 2번 추가 (유사도 계산 때문)
-                            frames.append(np.array(img))  # 같은 프레임 3번 추가
-                            break
+                # 단순 복제 대신 프레임 변형을 통해 다양성 추가
+                while len(frames) < 3:
+                    # 기존 프레임에서 왼쪽/오른쪽/위/아래 일부를 크롭하여 다른 프레임처럼 만듦
+                    base_frame = frames[0].copy()
+                    height, width = base_frame.shape
+                    
+                    # 첫 번째 추가 프레임: 왼쪽 3/4 사용
+                    if len(frames) == 1:
+                        new_frame = base_frame[:, :int(width*0.75)]
+                        # 원래 크기로 리사이즈
+                        new_frame = np.array(Image.fromarray(new_frame).resize(output_size))
+                        frames.append(new_frame)
+                    # 두 번째 추가 프레임: 오른쪽 3/4 사용
+                    elif len(frames) == 2:
+                        new_frame = base_frame[:, int(width*0.25):]
+                        # 원래 크기로 리사이즈
+                        new_frame = np.array(Image.fromarray(new_frame).resize(output_size))
+                        frames.append(new_frame)
             except Exception as e:
-                print(f"첫 키프레임 추출 오류: {e}")
+                print(f"프레임 변형 오류: {e}")
+                # 변형에 실패하면 마지막 수단으로 복제
+                while len(frames) < 3 and frames:
+                    # 가장 덜 유사한 프레임을 찾아 복제
+                    if len(frames) == 1:
+                        # 첫 프레임을 약간 어둡게 만들어 복제
+                        new_frame = frames[0].copy() * 0.8
+                        frames.append(new_frame.astype(np.uint8))
+                    elif len(frames) == 2:
+                        # 첫 프레임을 약간 밝게 만들어 복제
+                        new_frame = np.minimum(frames[0].copy() * 1.2, 255)
+                        frames.append(new_frame.astype(np.uint8))
+        
+        # 프레임이 전혀 없는 경우 (파일 접근 실패 등)
+        if not frames:
+            print(f"프레임 추출 실패: {os.path.basename(video_path)}")
+            return None
                 
-        return frames if frames else None
+        return frames
         
     @staticmethod
     def is_frame_too_dark(frame, threshold=20):
@@ -265,16 +296,29 @@ class VideoProcessor:
     @staticmethod
     def calculate_frame_similarity(frame1, frame2):
         """두 프레임 간의 유사도를 계산합니다 (0-100%, 높을수록 유사)"""
-        if frame1 is None or frame2 is None or frame1.shape != frame2.shape:
+        if frame1 is None or frame2 is None:
             return 0
             
-        # 절대 차이의 평균 계산
-        diff = np.abs(frame1.astype(float) - frame2.astype(float)).mean()
-        # 차이를 0-100 범위의 유사도로 변환
-        max_pixel_value = 255.0
-        similarity = 100.0 * (1.0 - (diff / max_pixel_value))
+        # 프레임 크기가 다른 경우 리사이즈하여 비교
+        if frame1.shape != frame2.shape:
+            try:
+                # 첫 번째 프레임 크기에 맞춰 두 번째 프레임 리사이즈
+                frame2_resized = np.array(Image.fromarray(frame2).resize(
+                    (frame1.shape[1], frame1.shape[0])
+                ))
+                frame2 = frame2_resized
+            except Exception as e:
+                print(f"프레임 리사이즈 오류: {e}")
+                return 0
         
-        # 파일 이름만 같으면 강제로 유사도를 높임
-        # 이건 이미 비디오 중복 찾기 로직에서 처리하므로 여기서는 제거
-        
-        return similarity 
+        try:
+            # 절대 차이의 평균 계산
+            diff = np.abs(frame1.astype(float) - frame2.astype(float)).mean()
+            # 차이를 0-100 범위의 유사도로 변환
+            max_pixel_value = 255.0
+            similarity = 100.0 * (1.0 - (diff / max_pixel_value))
+            
+            return similarity
+        except Exception as e:
+            print(f"유사도 계산 오류: {e}")
+            return 0 

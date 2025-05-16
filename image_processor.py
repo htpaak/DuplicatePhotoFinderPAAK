@@ -102,11 +102,25 @@ class ScanWorker(QObject):
         video_files = [] # 비디오 파일 목록
 
         try:
+            # 파일 수집 전 메시지 보내기 - 0은 임시 총 파일 수
+            self.scan_started.emit(0)
+            # progress_updated 시그널을 사용하여 폴더 검색 중임을 알림
+            self.progress_updated.emit(-1)  # -1은 폴더 검색 중이라는 특별한 값
+
             # 하위폴더 포함 여부에 따라 다른 방식으로 파일 수집
             if self.include_subfolders:
                 # 하위폴더를 포함한 모든 파일 수집 (os.walk 사용)
-                for root, _, files in os.walk(self.folder_path):
+                folder_count = 0
+                for root, dirs, files in os.walk(self.folder_path):
+                    folder_count += 1
+                    # 폴더 검색 진행 상황 업데이트 (폴더 검색 중임을 알림)
+                    if folder_count % 5 == 0:  # 5개 폴더마다 업데이트
+                        self.progress_updated.emit(-folder_count)
+                    
                     for filename in files:
+                        if not self._is_running:
+                            break
+                            
                         file_ext = os.path.splitext(filename)[1].lower()
                         file_path = os.path.join(root, filename)
                         if not os.path.isfile(file_path):
@@ -135,6 +149,9 @@ class ScanWorker(QObject):
                 # 현재 폴더의 파일만 수집 (기존 방식)
                 all_files_in_folder = os.listdir(self.folder_path)
                 for filename in all_files_in_folder:
+                    if not self._is_running:
+                        break
+                        
                     file_path = os.path.join(self.folder_path, filename)
                     if not os.path.isfile(file_path):
                         continue
@@ -160,10 +177,16 @@ class ScanWorker(QObject):
                             else:  # 일반적으로 이미지
                                 target_files.append(file_path)
             
+            # 파일 수집이 완료된 후 최종 카운트 설정
             total_target_files = len(target_files) + len(video_files)
             self.scan_started.emit(total_target_files)
             
             print(f"이미지 파일 수: {len(target_files)}, 비디오/애니메이션 파일 수: {len(video_files)}")
+            
+            # 파일이 0개인 경우 바로 완료 처리
+            if total_target_files == 0:
+                self.scan_finished.emit(0, 0, [])
+                return
 
             # 이미지 파일 처리
             for i, file_path in enumerate(target_files):
