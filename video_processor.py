@@ -5,9 +5,123 @@ import av
 import io
 import tempfile
 import time
+try:
+    from numba import njit, prange, cuda
+    NUMBA_AVAILABLE = True
+    # CUDA 지원 확인
+    CUDA_AVAILABLE = cuda.is_available()
+    if CUDA_AVAILABLE:
+        print("CUDA 가속을 사용할 수 있습니다.")
+    else:
+        print("CUDA를 사용할 수 없습니다. CPU로 실행됩니다.")
+except ImportError:
+    NUMBA_AVAILABLE = False
+    CUDA_AVAILABLE = False
+    print("Numba 라이브러리를 찾을 수 없습니다. 최적화 없이 실행됩니다.")
+
+# Numba JIT 컴파일된 최적화 함수
+if NUMBA_AVAILABLE:
+    @njit(parallel=True)
+    def calculate_similarity_numba(frame1, frame2):
+        """Numba로 최적화된 프레임 유사도 계산 함수"""
+        height, width = frame1.shape
+        total_diff = 0.0
+        
+        for i in prange(height):
+            row_diff = 0.0
+            for j in range(width):
+                row_diff += abs(float(frame1[i, j]) - float(frame2[i, j]))
+            total_diff += row_diff
+            
+        avg_diff = total_diff / (height * width)
+        return 100.0 * (1.0 - (avg_diff / 255.0))
+
+    @njit
+    def flip_frame_numba(frame):
+        """Numba로 최적화된 프레임 반전 함수"""
+        height, width = frame.shape
+        flipped = np.empty_like(frame)
+        
+        for i in range(height):
+            for j in range(width):
+                flipped[i, j] = frame[i, width - j - 1]
+                
+        return flipped
+
+    # CUDA 최적화 함수들 (GPU 사용 가능한 경우)
+    if CUDA_AVAILABLE:
+        @cuda.jit
+        def calculate_diff_cuda(frame1, frame2, result):
+            """CUDA로 최적화된 프레임 차이 계산 커널"""
+            i, j = cuda.grid(2)
+            if i < frame1.shape[0] and j < frame1.shape[1]:
+                result[i, j] = abs(float(frame1[i, j]) - float(frame2[i, j]))
+                
+        @cuda.jit
+        def flip_frame_cuda(frame, result):
+            """CUDA로 최적화된 프레임 반전 커널"""
+            i, j = cuda.grid(2)
+            if i < frame.shape[0] and j < frame.shape[1]:
+                result[i, j] = frame[i, frame.shape[1] - j - 1]
+        
+        def calculate_similarity_cuda(frame1, frame2):
+            """CUDA를 사용한 프레임 유사도 계산"""
+            height, width = frame1.shape
+            
+            # GPU 메모리 할당
+            d_frame1 = cuda.to_device(frame1)
+            d_frame2 = cuda.to_device(frame2)
+            d_result = cuda.device_array((height, width), dtype=np.float32)
+            
+            # 그리드 및 블록 크기 계산
+            threads_per_block = (16, 16)
+            blocks_per_grid_x = (height + threads_per_block[0] - 1) // threads_per_block[0]
+            blocks_per_grid_y = (width + threads_per_block[1] - 1) // threads_per_block[1]
+            blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+            
+            # 커널 실행
+            calculate_diff_cuda[blocks_per_grid, threads_per_block](d_frame1, d_frame2, d_result)
+            
+            # 결과를 호스트로 복사
+            result = d_result.copy_to_host()
+            
+            # 평균 계산
+            avg_diff = np.mean(result)
+            similarity = 100.0 * (1.0 - (avg_diff / 255.0))
+            
+            return similarity
+            
+        def flip_frame_cuda_wrapper(frame):
+            """CUDA를 사용한 프레임 반전"""
+            height, width = frame.shape
+            
+            # GPU 메모리 할당
+            d_frame = cuda.to_device(frame)
+            d_result = cuda.device_array((height, width), dtype=frame.dtype)
+            
+            # 그리드 및 블록 크기 계산
+            threads_per_block = (16, 16)
+            blocks_per_grid_x = (height + threads_per_block[0] - 1) // threads_per_block[0]
+            blocks_per_grid_y = (width + threads_per_block[1] - 1) // threads_per_block[1]
+            blocks_per_grid = (blocks_per_grid_x, blocks_per_grid_y)
+            
+            # 커널 실행
+            flip_frame_cuda[blocks_per_grid, threads_per_block](d_frame, d_result)
+            
+            # 결과를 호스트로 복사
+            result = d_result.copy_to_host()
+            
+            return result
 
 class VideoProcessor:
     """비디오 파일에서 프레임을 추출하고 처리하는 클래스"""
+    
+    def __init__(self):
+        """비디오 프로세서를 초기화합니다"""
+        self.use_hw_acceleration = False
+        if CUDA_AVAILABLE:
+            self.use_hw_acceleration = True
+            print("GPU 가속이 활성화되었습니다.")
     
     @staticmethod
     def check_av():
@@ -293,8 +407,7 @@ class VideoProcessor:
         avg_brightness = np.mean(frame)
         return avg_brightness < threshold
         
-    @staticmethod
-    def calculate_frame_similarity(frame1, frame2):
+    def calculate_frame_similarity(self, frame1, frame2):
         """두 프레임 간의 유사도를 계산합니다 (0-100%, 높을수록 유사)"""
         if frame1 is None or frame2 is None:
             return 0
@@ -312,13 +425,60 @@ class VideoProcessor:
                 return 0
         
         try:
-            # 절대 차이의 평균 계산
+            # CUDA 가속 사용 (가능하고 활성화된 경우)
+            if self.use_hw_acceleration and CUDA_AVAILABLE:
+                return calculate_similarity_cuda(frame1, frame2)
+                
+            # Numba CPU 최적화 사용 (가능한 경우)
+            elif NUMBA_AVAILABLE:
+                return calculate_similarity_numba(frame1, frame2)
+            
+            # 일반 NumPy 계산 (Numba 사용 불가시)
             diff = np.abs(frame1.astype(float) - frame2.astype(float)).mean()
-            # 차이를 0-100 범위의 유사도로 변환
-            max_pixel_value = 255.0
-            similarity = 100.0 * (1.0 - (diff / max_pixel_value))
+            similarity = 100.0 * (1.0 - (diff / 255.0))
             
             return similarity
         except Exception as e:
             print(f"유사도 계산 오류: {e}")
-            return 0 
+            return 0
+            
+    def flip_frame_horizontally(self, frame):
+        """프레임을 수평으로 반전합니다"""
+        if frame is None:
+            return None
+            
+        try:
+            # CUDA 가속 사용 (가능하고 활성화된 경우)
+            if self.use_hw_acceleration and CUDA_AVAILABLE:
+                return flip_frame_cuda_wrapper(frame)
+                
+            # Numba CPU 최적화 사용 (가능한 경우)
+            elif NUMBA_AVAILABLE:
+                return flip_frame_numba(frame)
+                
+            # 일반 NumPy 기능 사용 (Numba 사용 불가시)
+            return np.fliplr(frame)
+        except Exception as e:
+            print(f"프레임 수평 반전 오류: {e}")
+            return frame
+            
+    def create_flipped_frames(self, frames):
+        """프레임 목록의 수평 반전 버전을 생성합니다"""
+        if not frames:
+            return None
+            
+        flipped_frames = []
+        for frame in frames:
+            flipped_frame = self.flip_frame_horizontally(frame)
+            flipped_frames.append(flipped_frame)
+            
+        return flipped_frames
+        
+    def set_hardware_acceleration(self, enabled):
+        """하드웨어 가속 사용 여부를 설정합니다"""
+        if enabled and CUDA_AVAILABLE:
+            self.use_hw_acceleration = True
+            print("GPU 가속이 활성화되었습니다.")
+        else:
+            self.use_hw_acceleration = False
+            print("GPU 가속이 비활성화되었습니다. CPU를 사용합니다.") 

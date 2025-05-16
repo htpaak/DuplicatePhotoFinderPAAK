@@ -66,6 +66,29 @@ def run_video_duplicate_test(test_video_path, test_folder_path=None):
     
     processor = VideoProcessor()
     
+    # 성능 최적화 정보 출력
+    try:
+        import numba
+        print(f"✓ Numba 최적화 사용 가능: 버전 {numba.__version__}")
+        try:
+            if numba.cuda.is_available():
+                print(f"✓ CUDA 가속 사용 가능: 장치 {numba.cuda.get_current_device().name}")
+            else:
+                print("✗ CUDA 가속을 사용할 수 없습니다. CPU 기반 최적화만 사용됩니다.")
+        except Exception:
+            print("✗ CUDA 확인 중 오류가 발생했습니다. CPU 기반 최적화만 사용됩니다.")
+    except ImportError:
+        print("✗ Numba 최적화를 사용할 수 없습니다. 기본 NumPy만 사용됩니다.")
+    
+    # 하드링크 검사 기능 확인
+    print("\n기능 활성화 상태:")
+    print("✓ 하드링크 검사: 활성화됨")
+    print("✓ 수평 반전 이미지 검사: 활성화됨")
+    if hasattr(processor, 'use_hw_acceleration') and processor.use_hw_acceleration:
+        print("✓ 하드웨어 가속: 활성화됨")
+    else:
+        print("✗ 하드웨어 가속: 비활성화됨")
+    
     # 비디오 길이 확인
     duration = processor.get_video_duration(test_video_path)
     print(f"✓ 비디오 길이: {duration:.2f}초")
