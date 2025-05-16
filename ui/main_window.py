@@ -76,6 +76,12 @@ class MainWindow(QMainWindow):
         self.undo_button.clicked.connect(self.undo_manager.undo_last_action)
         self.undo_manager.undo_status_changed.connect(self.update_undo_button_state)
         self.undo_manager.group_state_restore_needed.connect(self._handle_group_state_restore)
+        
+        # 새로 추가한 버튼들의 시그널 연결
+        self.left_open_file_button.clicked.connect(lambda: self.open_selected_file('original'))
+        self.right_open_file_button.clicked.connect(lambda: self.open_selected_file('duplicate'))
+        self.left_open_folder_button.clicked.connect(lambda: self.open_parent_folder('original'))
+        self.right_open_folder_button.clicked.connect(lambda: self.open_parent_folder('duplicate'))
         # --- 시그널 연결 끝 --- 
 
         self._center_window() # 창 중앙 정렬 메서드 호출
@@ -495,6 +501,87 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Could not open feedback URL: {e}")
             QMessageBox.warning(self, "Error", f"Could not open the feedback page:\n{e}")
+    # --- 메서드 추가 끝 ---
+
+    # --- 파일 및 폴더 열기 메서드 추가 ---
+    def open_selected_file(self, target: str):
+        """선택된 이미지 파일을 시스템 기본 애플리케이션으로 엽니다."""
+        try:
+            target_label = self.left_image_label if target == 'original' else self.right_image_label
+            item_data = self._get_selected_item_data(target_label)
+            
+            if not item_data:
+                QMessageBox.warning(self, "Warning", "이미지를 선택하지 않았거나 선택한 항목에 대한 정보가 없습니다.")
+                return
+            
+            file_path, _ = item_data
+            
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "Warning", f"파일이 존재하지 않습니다: {file_path}")
+                return
+            
+            # 시스템 기본 애플리케이션으로 파일 열기
+            import subprocess
+            
+            # Windows 환경에서는 os.startfile 사용
+            try:
+                os.startfile(file_path)
+                print(f"파일을 시스템 기본 애플리케이션으로 열었습니다: {file_path}")
+            except AttributeError:
+                # 다른 OS의 경우 대안 방법 사용 (macOS, Linux 등)
+                try:
+                    if sys.platform == 'darwin':  # macOS
+                        subprocess.call(['open', file_path])
+                    else:  # Linux 등
+                        subprocess.call(['xdg-open', file_path])
+                    print(f"파일을 시스템 기본 애플리케이션으로 열었습니다: {file_path}")
+                except Exception as e:
+                    print(f"파일 열기 실패: {e}")
+                    QMessageBox.warning(self, "Error", f"파일을 열 수 없습니다: {e}")
+        except Exception as e:
+            print(f"파일 열기 오류: {e}")
+            QMessageBox.warning(self, "Error", f"파일 열기 중 오류가 발생했습니다: {e}")
+
+    def open_parent_folder(self, target: str):
+        """선택된 이미지가 있는 폴더를 파일 탐색기에서 엽니다."""
+        try:
+            target_label = self.left_image_label if target == 'original' else self.right_image_label
+            item_data = self._get_selected_item_data(target_label)
+            
+            if not item_data:
+                QMessageBox.warning(self, "Warning", "이미지를 선택하지 않았거나 선택한 항목에 대한 정보가 없습니다.")
+                return
+            
+            file_path, _ = item_data
+            
+            if not os.path.exists(file_path):
+                QMessageBox.warning(self, "Warning", f"파일이 존재하지 않습니다: {file_path}")
+                return
+            
+            # 파일이 있는 폴더 경로 가져오기
+            folder_path = os.path.dirname(file_path)
+            
+            # 파일 탐색기에서 폴더 열기
+            import subprocess
+            
+            # Windows 환경에서는 탐색기 열기
+            try:
+                os.startfile(folder_path)
+                print(f"폴더를 파일 탐색기에서 열었습니다: {folder_path}")
+            except AttributeError:
+                # 다른 OS의 경우 대안 방법 사용
+                try:
+                    if sys.platform == 'darwin':  # macOS
+                        subprocess.call(['open', folder_path])
+                    else:  # Linux 등
+                        subprocess.call(['xdg-open', folder_path])
+                    print(f"폴더를 파일 탐색기에서 열었습니다: {folder_path}")
+                except Exception as e:
+                    print(f"폴더 열기 실패: {e}")
+                    QMessageBox.warning(self, "Error", f"폴더를 열 수 없습니다: {e}")
+        except Exception as e:
+            print(f"폴더 열기 오류: {e}")
+            QMessageBox.warning(self, "Error", f"폴더 열기 중 오류가 발생했습니다: {e}")
     # --- 메서드 추가 끝 ---
 
 if __name__ == '__main__':
