@@ -183,10 +183,10 @@ def setup_ui(window: 'MainWindow'):
     window.left_delete_button = QPushButton("Delete") # window 속성으로 할당
     window.left_open_file_button = QPushButton("Open File") # 파일 열기 버튼 추가
     window.left_open_folder_button = QPushButton("Open Folder") # 폴더 열기 버튼 추가
-    left_button_layout.addWidget(window.left_move_button)
-    left_button_layout.addWidget(window.left_delete_button)
     left_button_layout.addWidget(window.left_open_file_button)
     left_button_layout.addWidget(window.left_open_folder_button)
+    left_button_layout.addWidget(window.left_move_button)
+    left_button_layout.addWidget(window.left_delete_button)
     left_panel_layout.addLayout(left_button_layout)
     image_comparison_layout.addLayout(left_panel_layout)
 
@@ -203,10 +203,10 @@ def setup_ui(window: 'MainWindow'):
     window.right_delete_button = QPushButton("Delete") # window 속성으로 할당
     window.right_open_file_button = QPushButton("Open File") # 파일 열기 버튼 추가
     window.right_open_folder_button = QPushButton("Open Folder") # 폴더 열기 버튼 추가
-    right_button_layout.addWidget(window.right_move_button)
-    right_button_layout.addWidget(window.right_delete_button)
     right_button_layout.addWidget(window.right_open_file_button)
     right_button_layout.addWidget(window.right_open_folder_button)
+    right_button_layout.addWidget(window.right_move_button)
+    right_button_layout.addWidget(window.right_delete_button)
     right_panel_layout.addLayout(right_button_layout)
     image_comparison_layout.addLayout(right_panel_layout)
 
