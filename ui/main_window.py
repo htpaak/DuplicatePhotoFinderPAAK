@@ -558,27 +558,52 @@ class MainWindow(QMainWindow):
                 QMessageBox.warning(self, "Warning", f"파일이 존재하지 않습니다: {file_path}")
                 return
             
-            # 파일이 있는 폴더 경로 가져오기
-            folder_path = os.path.dirname(file_path)
-            
-            # 파일 탐색기에서 폴더 열기
             import subprocess
             
-            # Windows 환경에서는 탐색기 열기
-            try:
-                os.startfile(folder_path)
-                print(f"폴더를 파일 탐색기에서 열었습니다: {folder_path}")
-            except AttributeError:
-                # 다른 OS의 경우 대안 방법 사용
+            # Windows 환경에서는 explorer /select 명령 사용
+            if sys.platform == 'win32':
                 try:
-                    if sys.platform == 'darwin':  # macOS
-                        subprocess.call(['open', folder_path])
-                    else:  # Linux 등
-                        subprocess.call(['xdg-open', folder_path])
-                    print(f"폴더를 파일 탐색기에서 열었습니다: {folder_path}")
+                    # 경로를 Windows 형식으로 변환 (백슬래시로 통일)
+                    file_path = os.path.normpath(file_path)
+                    # 명령어와 인자를 분리하여 실행 (셸 인젝션 방지 및 공백 포함 파일명 처리)
+                    subprocess.run(['explorer', '/select,', file_path])
+                    print(f"파일 선택 상태로 폴더를 열었습니다: {file_path}")
                 except Exception as e:
-                    print(f"폴더 열기 실패: {e}")
-                    QMessageBox.warning(self, "Error", f"폴더를 열 수 없습니다: {e}")
+                    print(f"파일 선택 폴더 열기 실패: {e}")
+                    # 백업 방법: 간단하게 파일이 있는 디렉토리만 열기
+                    try:
+                        folder_path = os.path.dirname(file_path)
+                        os.startfile(folder_path)
+                        print(f"폴더만 열었습니다 (백업 방법): {folder_path}")
+                    except Exception as e2:
+                        print(f"폴더 열기 백업 방법도 실패: {e2}")
+                    QMessageBox.warning(self, "Error", f"파일 선택 폴더 열기 중 오류가 발생했습니다: {e}")
+            elif sys.platform == 'darwin':  # macOS
+                try:
+                    # macOS에서는 -R 옵션으로 파일 선택
+                    subprocess.call(['open', '-R', file_path])
+                    print(f"파일 선택 상태로 폴더를 열었습니다: {file_path}")
+                except Exception as e:
+                    print(f"파일 선택 폴더 열기 실패: {e}")
+                    QMessageBox.warning(self, "Error", f"파일 선택 폴더 열기 중 오류가 발생했습니다: {e}")
+            else:  # Linux 등
+                try:
+                    # Linux 환경에서 파일 선택을 위한 명령 (파일 매니저에 따라 다를 수 있음)
+                    if os.path.exists('/usr/bin/nautilus'):  # GNOME/Nautilus
+                        subprocess.call(['nautilus', '--select', file_path])
+                    elif os.path.exists('/usr/bin/dolphin'):  # KDE/Dolphin
+                        subprocess.call(['dolphin', '--select', file_path])
+                    elif os.path.exists('/usr/bin/nemo'):  # Cinnamon/Nemo
+                        subprocess.call(['nemo', file_path])
+                    elif os.path.exists('/usr/bin/thunar'):  # XFCE/Thunar
+                        subprocess.call(['thunar', os.path.dirname(file_path)])
+                    else:
+                        # 그 외의 경우 폴더만 열기
+                        subprocess.call(['xdg-open', os.path.dirname(file_path)])
+                    print(f"파일 선택 상태로 폴더를 열었습니다: {file_path}")
+                except Exception as e:
+                    print(f"파일 선택 폴더 열기 실패: {e}")
+                    QMessageBox.warning(self, "Error", f"파일 선택 폴더 열기 중 오류가 발생했습니다: {e}")
         except Exception as e:
             print(f"폴더 열기 오류: {e}")
             QMessageBox.warning(self, "Error", f"폴더 열기 중 오류가 발생했습니다: {e}")
