@@ -163,6 +163,8 @@ class UndoManager(QObject):
         last_action = self.actions.pop()
         action_type = last_action.get('type')
         
+        print(f"[UndoManager Debug] 마지막 작업 실행 취소 시작: {action_type}")
+        
         # 작업 유형에 따라 처리
         if action_type == self.ACTION_DELETE:
             result = self._undo_deletion(last_action)
@@ -175,6 +177,8 @@ class UndoManager(QObject):
         else:
             self.show_message(f"Unknown action type: {action_type}", 'error')
             result = False, None
+        
+        print(f"[UndoManager Debug] 작업 취소 결과: {result}")
         
         # Undo 후 상태 업데이트
         self.undo_status_changed.emit(len(self.actions) > 0)
@@ -195,12 +199,23 @@ class UndoManager(QObject):
              self.show_message("Invalid action data for undo delete.", 'error')
              return False, None
 
+        print(f"[UndoManager Debug] 삭제 취소 시도: {original_path}")
+
         if self._restore_from_trash(original_path):
             # 테이블 복원 로직 변경: MainWindow에서 처리하도록 시그널 발생
             print(f"[UndoManager] File restored: {original_path}. Triggering group state restore.")
+            
+            # 시그널 발생 전 데이터 확인
+            group_id = delete_action.get('group_id')
+            snapshot_rep = delete_action.get('snapshot_rep')
+            snapshot_members = delete_action.get('snapshot_members')
+            print(f"[UndoManager Debug] 시그널 발생할 데이터: group_id={group_id}, snapshot_rep={os.path.basename(snapshot_rep) if snapshot_rep else 'None'}, snapshot_members 수={len(snapshot_members) if snapshot_members else 0}")
+            
+            # 시그널 발생
             self.group_state_restore_needed.emit(delete_action)
             return True, original_path
         else:
+            print(f"[UndoManager Debug] 휴지통에서 파일 복원 실패: {original_path}")
             return False, None
     
     def _undo_move(self, move_action):
