@@ -52,6 +52,8 @@ class MainWindow(QMainWindow):
         self.previous_selection_index: Optional[int] = None # 프록시 행 인덱스 저장용
         self.last_acted_representative_path: Optional[str] = None
         self.last_acted_member_path: Optional[str] = None
+        # 선택된 항목 관리를 위한 변수 추가
+        self.selected_items: List[str] = [] # 선택된 멤버 파일 경로 목록
 
         # --- 파일 액션 핸들러 인스턴스 생성 --- 
         self.file_action_handler = FileActionHandler(self)
@@ -82,6 +84,15 @@ class MainWindow(QMainWindow):
         self.right_open_file_button.clicked.connect(lambda: self.open_selected_file('duplicate'))
         self.left_open_folder_button.clicked.connect(lambda: self.open_parent_folder('original'))
         self.right_open_folder_button.clicked.connect(lambda: self.open_parent_folder('duplicate'))
+        
+        # 체크박스 클릭 이벤트를 처리하기 위한 시그널 연결
+        self.duplicate_table_model.itemChanged.connect(self.on_checkbox_changed)
+        
+        # 일괄 작업 버튼 시그널 연결
+        self.select_all_button.clicked.connect(self.select_all_items)
+        self.select_none_button.clicked.connect(self.clear_selection)
+        self.batch_delete_button.clicked.connect(self.delete_selected_items)
+        self.batch_move_button.clicked.connect(self.move_selected_items)
         # --- 시그널 연결 끝 --- 
 
         self._center_window() # 창 중앙 정렬 메서드 호출
@@ -263,7 +274,9 @@ class MainWindow(QMainWindow):
 
     def on_table_item_clicked(self, index: QModelIndex):
         """테이블 뷰의 항목 클릭 시 상단 이미지 패널을 업데이트합니다."""
+        print(f"[TableClick] Table item clicked: row={index.row()}, column={index.column()}")
         if not index.isValid():
+            print("[TableClick] Invalid index")
             return
             
         # --- 프록시 모델 인덱스를 소스 모델 인덱스로 변환 --- 
@@ -271,11 +284,11 @@ class MainWindow(QMainWindow):
         row = source_index.row()
         # --- 변환 끝 ---
 
-        # --- 소스 모델에서 데이터 가져오기 --- 
-        representative_path_item = self.duplicate_table_model.item(row, 1) 
-        member_path_item = self.duplicate_table_model.item(row, 2) 
-        similarity_item = self.duplicate_table_model.item(row, 3)
-        group_id_item = self.duplicate_table_model.item(row, 4) 
+        # --- 소스 모델에서 데이터 가져오기 (인덱스 값 수정) --- 
+        representative_path_item = self.duplicate_table_model.item(row, 2) 
+        member_path_item = self.duplicate_table_model.item(row, 3) 
+        similarity_item = self.duplicate_table_model.item(row, 4)
+        group_id_item = self.duplicate_table_model.item(row, 5) 
         # --- 가져오기 끝 ---
 
         if representative_path_item and member_path_item and group_id_item:
@@ -311,10 +324,10 @@ class MainWindow(QMainWindow):
         selected_row = source_index.row()
         # --- 변환 끝 ---
 
-        # --- 소스 모델에서 데이터 가져오기 --- 
-        representative_item = self.duplicate_table_model.item(selected_row, 1)
-        member_item = self.duplicate_table_model.item(selected_row, 2)
-        group_id_item = self.duplicate_table_model.item(selected_row, 4) 
+        # --- 소스 모델에서 데이터 가져오기 (인덱스 값 수정) --- 
+        representative_item = self.duplicate_table_model.item(selected_row, 2)
+        member_item = self.duplicate_table_model.item(selected_row, 3)
+        group_id_item = self.duplicate_table_model.item(selected_row, 5) 
         # --- 가져오기 끝 ---
 
         if not (representative_item and member_item and group_id_item):
@@ -345,8 +358,8 @@ class MainWindow(QMainWindow):
         print(f"[UpdateTable Debug] Searching rows to remove...") # 로그 2
         for row in range(self.duplicate_table_model.rowCount()):
             # --- Group ID 열 인덱스 변경 (4 -> 5) : 주의! 이 함수 외부와 일치해야 함 ---
-            # -> 그룹 ID는 이제 4번 인덱스가 맞음 (0:#, 1:Rep, 2:Mem, 3:Sim, 4:GroupID)
-            item = self.duplicate_table_model.item(row, 4) 
+            # -> 그룹 ID는 이제 5번 인덱스로 변경 (0:Select, 1:Rank, 2:Rep, 3:Mem, 4:Sim, 5:GroupID)
+            item = self.duplicate_table_model.item(row, 5) 
             if item and item.text() == group_id:
                 rows_to_remove.append(row)
         print(f"[UpdateTable Debug] Found rows to remove: {rows_to_remove}") # 로그 3
@@ -371,6 +384,11 @@ class MainWindow(QMainWindow):
                 for member_path, similarity, rank in members_data:
                     print(f"[UpdateTable Debug] Processing member: {os.path.basename(member_path)}, Seq: {rank}") # 로그 7
                     if representative == member_path: continue 
+                    
+                    # 체크박스 아이템 생성
+                    item_checkbox = QStandardItem()
+                    item_checkbox.setCheckable(True)
+                    item_checkbox.setCheckState(Qt.Unchecked)
                         
                     # 'Rank' 열 아이템 생성
                     item_rank = QStandardItem(str(rank))
@@ -392,8 +410,8 @@ class MainWindow(QMainWindow):
                     item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
                     item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
                     
-                    # 'Rank' 열 아이템 맨 앞에 추가하여 행 추가
-                    row_items = [item_rank, item_representative, item_member, item_similarity, item_group_id]
+                    # 체크박스 열을 포함하여 행 아이템 추가
+                    row_items = [item_checkbox, item_rank, item_representative, item_member, item_similarity, item_group_id]
                     print(f"[UpdateTable Debug] Appending row for seq {rank}...") # 로그 8
                     self.duplicate_table_model.appendRow(row_items)
                     print(f"[UpdateTable Debug] Row appended for seq {rank}.") # 로그 9
@@ -419,10 +437,10 @@ class MainWindow(QMainWindow):
                 for proxy_row in range(new_proxy_row_count):
                     # 프록시 인덱스 -> 소스 인덱스
                     source_index_group_id = self.duplicate_table_proxy_model.mapToSource(
-                        self.duplicate_table_proxy_model.index(proxy_row, 4)
+                        self.duplicate_table_proxy_model.index(proxy_row, 5)
                     )
                     # 소스 모델에서 그룹 ID 아이템 가져오기
-                    item = self.duplicate_table_model.item(source_index_group_id.row(), 4) 
+                    item = self.duplicate_table_model.item(source_index_group_id.row(), 5)
                     if item and item.text() == self.last_acted_group_id:
                         next_row_to_select = proxy_row # 선택할 행은 프록시 행 인덱스
                         break
@@ -493,12 +511,12 @@ class MainWindow(QMainWindow):
             restored_proxy_row_index = -1
             if target_rep_path and target_mem_path: 
                 for proxy_row in range(self.duplicate_table_proxy_model.rowCount()):
-                     proxy_index_rep = self.duplicate_table_proxy_model.index(proxy_row, 1)
+                     proxy_index_rep = self.duplicate_table_proxy_model.index(proxy_row, 2)
                      source_index_rep = self.duplicate_table_proxy_model.mapToSource(proxy_index_rep)
-                     proxy_index_mem = self.duplicate_table_proxy_model.index(proxy_row, 2)
+                     proxy_index_mem = self.duplicate_table_proxy_model.index(proxy_row, 3)
                      source_index_mem = self.duplicate_table_proxy_model.mapToSource(proxy_index_mem)
-                     current_rep_item = self.duplicate_table_model.item(source_index_rep.row(), 1)
-                     current_mem_item = self.duplicate_table_model.item(source_index_mem.row(), 2)
+                     current_rep_item = self.duplicate_table_model.item(source_index_rep.row(), 2)
+                     current_mem_item = self.duplicate_table_model.item(source_index_mem.row(), 3)
                      current_rep_path = current_rep_item.text() if current_rep_item else None
                      current_mem_path = current_mem_item.text() if current_mem_item else None
                      if current_rep_path == target_rep_path and current_mem_path == target_mem_path:
@@ -629,6 +647,217 @@ class MainWindow(QMainWindow):
             print(f"폴더 열기 오류: {e}")
             QMessageBox.warning(self, "Error", f"폴더 열기 중 오류가 발생했습니다: {e}")
     # --- 메서드 추가 끝 ---
+
+    def on_checkbox_changed(self, item):
+        """체크박스 상태 변경을 처리하는 슬롯"""
+        if item.column() == 0:  # 체크박스가 0번 열에 있는지 확인
+            # 원본 모델의 행 인덱스 가져오기
+            row = item.row()
+            
+            # 해당 행의 멤버 파일 경로 가져오기 (3번 열)
+            member_path = self.duplicate_table_model.item(row, 3).text()
+            
+            # 체크 상태에 따라 선택된 항목 목록 업데이트
+            if item.checkState() == Qt.Checked:
+                if member_path not in self.selected_items:
+                    self.selected_items.append(member_path)
+                    print(f"항목 선택됨: {member_path}")
+            else:
+                if member_path in self.selected_items:
+                    self.selected_items.remove(member_path)
+                    print(f"항목 선택 해제됨: {member_path}")
+            
+            # 현재 선택된 항목 수 표시
+            self.status_label.setText(f"선택된 항목: {len(self.selected_items)}개")
+            
+            # 디버깅용 로그
+            print(f"현재 선택된 항목 수: {len(self.selected_items)}")
+            
+            # 일괄 작업 버튼 활성화/비활성화
+            self._update_batch_buttons_state()
+    
+    def _update_batch_buttons_state(self):
+        """선택된 항목 수에 따라 일괄 작업 버튼 상태 업데이트"""
+        has_selected_items = len(self.selected_items) > 0
+        self.batch_delete_button.setEnabled(has_selected_items)
+        self.batch_move_button.setEnabled(has_selected_items)
+    
+    def select_all_items(self):
+        """테이블의 모든 항목 선택"""
+        # 먼저 선택 항목 목록 초기화
+        self.selected_items.clear()
+        
+        # 모든 행을 순회하며 체크박스 체크
+        for row in range(self.duplicate_table_model.rowCount()):
+            # 체크박스 아이템 가져오기 (0번 열)
+            checkbox_item = self.duplicate_table_model.item(row, 0)
+            if checkbox_item:
+                # 멤버 파일 경로 가져오기 (3번 열)
+                member_item = self.duplicate_table_model.item(row, 3)
+                if member_item:
+                    member_path = member_item.text()
+                    # 아이템이 존재하고 현재 선택되지 않았다면 선택 목록에 추가
+                    if member_path not in self.selected_items:
+                        self.selected_items.append(member_path)
+                
+                # itemChanged 시그널이 발생하지 않도록 블로킹
+                self.duplicate_table_model.blockSignals(True)
+                checkbox_item.setCheckState(Qt.Checked)
+                self.duplicate_table_model.blockSignals(False)
+        
+        # 상태 라벨 업데이트
+        self.status_label.setText(f"선택된 항목: {len(self.selected_items)}개")
+        print(f"모든 항목 선택됨: {len(self.selected_items)}개")
+        
+        # 일괄 작업 버튼 활성화/비활성화
+        self._update_batch_buttons_state()
+    
+    def clear_selection(self):
+        """선택된 모든 항목 선택 해제"""
+        # 선택 항목 목록 초기화
+        self.selected_items.clear()
+        
+        # 모든 행을 순회하며 체크박스 해제
+        for row in range(self.duplicate_table_model.rowCount()):
+            # 체크박스 아이템 가져오기
+            checkbox_item = self.duplicate_table_model.item(row, 0)
+            if checkbox_item:
+                # itemChanged 시그널이 발생하지 않도록 블로킹
+                self.duplicate_table_model.blockSignals(True)
+                checkbox_item.setCheckState(Qt.Unchecked)
+                self.duplicate_table_model.blockSignals(False)
+        
+        # 상태 라벨 업데이트
+        self.status_label.setText("선택된 항목: 0개")
+        print("모든 선택 해제됨")
+        
+        # 일괄 작업 버튼 활성화/비활성화
+        self._update_batch_buttons_state()
+    
+    def delete_selected_items(self):
+        """선택된 모든 항목 삭제"""
+        if not self.selected_items:
+            QMessageBox.information(self, "알림", "선택된 항목이 없습니다.")
+            return
+        
+        # 삭제 확인 메시지
+        reply = QMessageBox.question(
+            self, 
+            "삭제 확인", 
+            f"선택한 {len(self.selected_items)}개 항목을 삭제하시겠습니까?\n이 작업은 실행취소할 수 있습니다.",
+            QMessageBox.Yes | QMessageBox.No, 
+            QMessageBox.No
+        )
+        
+        if reply != QMessageBox.Yes:
+            return
+        
+        # 선택된 항목들에 대한 정보 수집
+        items_info = []
+        for member_path in self.selected_items:
+            # 멤버 파일이 속한 그룹 ID와 대표 파일 경로 찾기
+            group_id = None
+            representative_path = None
+            
+            # 테이블에서 해당 파일 정보 찾기
+            for row in range(self.duplicate_table_model.rowCount()):
+                member_item = self.duplicate_table_model.item(row, 3)
+                if member_item and member_item.text() == member_path:
+                    rep_item = self.duplicate_table_model.item(row, 2)
+                    group_id_item = self.duplicate_table_model.item(row, 5)
+                    
+                    if rep_item and group_id_item:
+                        representative_path = rep_item.text()
+                        group_id = group_id_item.text()
+                        break
+            
+            if group_id and representative_path:
+                items_info.append({
+                    'member_path': member_path,
+                    'representative_path': representative_path,
+                    'group_id': group_id
+                })
+            else:
+                print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
+        
+        # 삭제 작업 수행
+        success_count = 0
+        for item_info in items_info:
+            member_path = item_info['member_path']
+            representative_path = item_info['representative_path']
+            group_id = item_info['group_id']
+            
+            # 파일 액션 핸들러를 통해 삭제 수행
+            if self.file_action_handler.delete_file(member_path, group_id, representative_path):
+                success_count += 1
+        
+        # 결과 메시지 표시
+        if success_count > 0:
+            self.status_label.setText(f"{success_count}개 항목 삭제 완료")
+            # 선택 목록 초기화
+            self.selected_items.clear()
+            self._update_batch_buttons_state()
+        else:
+            QMessageBox.warning(self, "삭제 실패", "선택한 항목 중 삭제할 수 있는 항목이 없습니다.")
+    
+    def move_selected_items(self):
+        """선택된 모든 항목 이동"""
+        if not self.selected_items:
+            QMessageBox.information(self, "알림", "선택된 항목이 없습니다.")
+            return
+        
+        # 이동할 대상 폴더 선택
+        target_dir = QFileDialog.getExistingDirectory(self, "선택한 파일을 이동할 폴더 선택")
+        if not target_dir:
+            return  # 사용자가 취소함
+        
+        # 선택된 항목들에 대한 정보 수집
+        items_info = []
+        for member_path in self.selected_items:
+            # 멤버 파일이 속한 그룹 ID와 대표 파일 경로 찾기
+            group_id = None
+            representative_path = None
+            
+            # 테이블에서 해당 파일 정보 찾기
+            for row in range(self.duplicate_table_model.rowCount()):
+                member_item = self.duplicate_table_model.item(row, 3)
+                if member_item and member_item.text() == member_path:
+                    rep_item = self.duplicate_table_model.item(row, 2)
+                    group_id_item = self.duplicate_table_model.item(row, 5)
+                    
+                    if rep_item and group_id_item:
+                        representative_path = rep_item.text()
+                        group_id = group_id_item.text()
+                        break
+            
+            if group_id and representative_path:
+                items_info.append({
+                    'member_path': member_path,
+                    'representative_path': representative_path,
+                    'group_id': group_id
+                })
+            else:
+                print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
+        
+        # 이동 작업 수행
+        success_count = 0
+        for item_info in items_info:
+            member_path = item_info['member_path']
+            representative_path = item_info['representative_path']
+            group_id = item_info['group_id']
+            
+            # 파일 액션 핸들러를 통해 이동 수행
+            if self.file_action_handler.move_file(member_path, target_dir, group_id, representative_path):
+                success_count += 1
+        
+        # 결과 메시지 표시
+        if success_count > 0:
+            self.status_label.setText(f"{success_count}개 항목 이동 완료")
+            # 선택 목록 초기화
+            self.selected_items.clear()
+            self._update_batch_buttons_state()
+        else:
+            QMessageBox.warning(self, "이동 실패", "선택한 항목 중 이동할 수 있는 항목이 없습니다.")
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 

@@ -101,6 +101,12 @@ class ScanResultProcessor:
                        break
              if rank == -1: continue # 오류 방지
 
+             # 체크박스 아이템 생성
+             item_checkbox = QStandardItem()
+             item_checkbox.setCheckable(True)
+             item_checkbox.setCheckState(Qt.Unchecked)
+             print(f"[TableDebug] Created checkbox item for row {rank}, member={os.path.basename(mem_path)}")
+             
              # Rank 열 아이템 생성
              item_rank = QStandardItem(str(rank))
              item_rank.setTextAlignment(Qt.AlignCenter)
@@ -130,8 +136,11 @@ class ScanResultProcessor:
              item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
              item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
              
-             # 'Rank' 열 아이템 맨 앞에 추가
-             mw.duplicate_table_model.appendRow([item_rank, item_representative, item_member, item_similarity, item_group_id])
+             # 체크박스 아이템을 맨 앞에 추가
+             row_items = [item_checkbox, item_rank, item_representative, item_member, item_similarity, item_group_id]
+             print(f"[TableDebug] Adding row with {len(row_items)} items: {row_items[0]}, {row_items[1]}, ...")
+             mw.duplicate_table_model.appendRow(row_items)
+             print(f"[TableDebug] Row added to table model. Current row count: {mw.duplicate_table_model.rowCount()}")
         # --- 테이블 채우기 로직 수정 끝 ---
 
         if mw.duplicate_table_model.rowCount() > 0:

@@ -15,6 +15,166 @@ class FileActionHandler:
     def __init__(self, main_window: 'MainWindow'):
         self.main_window = main_window
 
+    def delete_file(self, file_path: str, group_id: str, representative_path: str) -> bool:
+        """특정 파일을 삭제하고 그룹 데이터를 업데이트합니다. 
+        일괄 작업용 도우미 함수입니다.
+        
+        Args:
+            file_path: 삭제할 파일 경로
+            group_id: 파일이 속한 그룹 ID
+            representative_path: 그룹의 대표 파일 경로
+            
+        Returns:
+            bool: 삭제 성공 여부
+        """
+        try:
+            if not os.path.exists(file_path):
+                print(f"[Delete File] 파일이 존재하지 않습니다: {file_path}")
+                return False
+                
+            # 그룹 데이터 확인
+            if group_id not in self.main_window.duplicate_groups_data or group_id not in self.main_window.group_representatives:
+                print(f"[Delete File] 그룹 데이터가 일치하지 않습니다: {group_id}")
+                return False
+                
+            # 복원을 위한 그룹 데이터 스냅샷 저장
+            restore_snapshot_rep = self.main_window.group_representatives.get(group_id)
+            restore_snapshot_members = copy.deepcopy(self.main_window.duplicate_groups_data.get(group_id, []))
+            
+            # 실행 취소 정보 준비
+            representative_path_for_undo = self.main_window.group_representatives[group_id]
+            member_paths_for_undo = [path for path, _, _ in self.main_window.duplicate_groups_data[group_id]]
+            all_original_paths_for_undo = [representative_path_for_undo] + member_paths_for_undo
+            
+            # 파일 삭제 시도 (UndoManager 사용)
+            if self.main_window.undo_manager.delete_file(file_path, group_id, representative_path_for_undo, 
+                                                       all_original_paths_for_undo, restore_snapshot_rep, 
+                                                       restore_snapshot_members):
+                print(f"[Delete File] 파일을 휴지통으로 이동했습니다: {file_path}")
+                
+                # 내부 그룹 데이터에서 파일 제거
+                current_group_tuples = self.main_window.duplicate_groups_data[group_id]
+                found_and_removed = False
+                for i, (path, _, _) in enumerate(current_group_tuples):
+                    if path == file_path:
+                        del current_group_tuples[i]
+                        found_and_removed = True
+                        print(f"[Delete File] 그룹 {group_id}에서 {os.path.basename(file_path)}를 제거했습니다. 남은 멤버: {len(current_group_tuples)}")
+                        break
+                
+                # 대표 이미지 처리
+                current_representative = self.main_window.group_representatives.get(group_id)
+                if file_path == current_representative:
+                    if current_group_tuples:
+                        new_representative_path, _, _ = current_group_tuples[0]
+                        self.main_window.group_representatives[group_id] = new_representative_path
+                        del current_group_tuples[0]
+                        print(f"[Delete File] 그룹 {group_id}: 새 대표 파일로 {os.path.basename(new_representative_path)}를 설정했습니다.")
+                    else:
+                        print(f"[Delete File] 그룹 {group_id}가 비었습니다. 그룹 데이터를 제거합니다.")
+                        if group_id in self.main_window.duplicate_groups_data: 
+                            del self.main_window.duplicate_groups_data[group_id]
+                        if group_id in self.main_window.group_representatives: 
+                            del self.main_window.group_representatives[group_id]
+                else:
+                    # 대표가 아닌데 멤버 목록이 비게 되는 경우 (마지막 멤버가 삭제된 경우)
+                    if not current_group_tuples:
+                        print(f"[Delete File] 그룹 {group_id}에서 마지막 멤버가 삭제되었습니다. 그룹 데이터를 제거합니다.")
+                        if group_id in self.main_window.duplicate_groups_data: 
+                            del self.main_window.duplicate_groups_data[group_id]
+                        if group_id in self.main_window.group_representatives: 
+                            del self.main_window.group_representatives[group_id]
+                
+                # 테이블 업데이트
+                if group_id in self.main_window.duplicate_groups_data and self.main_window.duplicate_groups_data[group_id]:
+                    self.main_window._update_table_for_group(group_id)
+                elif group_id not in self.main_window.duplicate_groups_data or not self.main_window.duplicate_groups_data.get(group_id):
+                    rows_to_remove = []
+                    for row in range(self.main_window.duplicate_table_model.rowCount()):
+                        item = self.main_window.duplicate_table_model.item(row, 5) # Group ID는 5번 열
+                        if item and item.text() == group_id:
+                            rows_to_remove.append(row)
+                    
+                    if rows_to_remove:
+                        for row in sorted(rows_to_remove, reverse=True):
+                            self.main_window.duplicate_table_model.removeRow(row)
+                
+                return True
+            
+            return False
+        except Exception as e:
+            print(f"[Delete File] 파일 삭제 중 오류 발생: {e}")
+            traceback.print_exc()
+            return False
+    
+    def move_file(self, file_path: str, target_dir: str, group_id: str, representative_path: str) -> bool:
+        """특정 파일을 다른 위치로 이동하고 그룹 데이터를 업데이트합니다.
+        일괄 작업용 도우미 함수입니다.
+        
+        Args:
+            file_path: 이동할 파일 경로
+            target_dir: 이동할 대상 디렉토리
+            group_id: 파일이 속한 그룹 ID
+            representative_path: 그룹의 대표 파일 경로
+            
+        Returns:
+            bool: 이동 성공 여부
+        """
+        try:
+            if not os.path.exists(file_path):
+                print(f"[Move File] 파일이 존재하지 않습니다: {file_path}")
+                return False
+                
+            if not os.path.exists(target_dir) or not os.path.isdir(target_dir):
+                print(f"[Move File] 대상 디렉토리가 존재하지 않습니다: {target_dir}")
+                return False
+                
+            # 그룹 데이터 확인
+            if group_id not in self.main_window.duplicate_groups_data or group_id not in self.main_window.group_representatives:
+                print(f"[Move File] 그룹 데이터가 일치하지 않습니다: {group_id}")
+                return False
+            
+            # 복원을 위한 그룹 데이터 스냅샷 저장
+            snapshot_rep = self.main_window.group_representatives.get(group_id)
+            snapshot_members = copy.deepcopy(self.main_window.duplicate_groups_data.get(group_id, []))
+            
+            # 실행 취소 정보 준비
+            representative_path_for_undo = self.main_window.group_representatives[group_id]
+            member_paths_for_undo = [path for path, _, _ in self.main_window.duplicate_groups_data[group_id]]
+            all_original_paths_for_undo = [representative_path_for_undo] + member_paths_for_undo
+            
+            # 파일 이동 시도 (UndoManager 사용)
+            if self.main_window.undo_manager.move_file(file_path, target_dir, group_id, representative_path_for_undo, 
+                                                     all_original_paths_for_undo, snapshot_rep, snapshot_members):
+                print(f"[Move File] 파일을 이동했습니다: {file_path} -> {target_dir}")
+                
+                # 새 파일 경로 계산
+                filename = os.path.basename(file_path)
+                new_file_path = os.path.join(target_dir, filename)
+                
+                # 내부 그룹 데이터 업데이트
+                current_group_tuples = self.main_window.duplicate_groups_data[group_id]
+                for i, (path, similarity, rank) in enumerate(current_group_tuples):
+                    if path == file_path:
+                        current_group_tuples[i] = (new_file_path, similarity, rank)
+                        print(f"[Move File] 그룹 데이터 업데이트됨: {os.path.basename(file_path)} -> {os.path.basename(new_file_path)}")
+                        break
+                
+                # 대표 이미지 처리
+                if file_path == self.main_window.group_representatives.get(group_id):
+                    self.main_window.group_representatives[group_id] = new_file_path
+                    print(f"[Move File] 대표 파일 경로 업데이트됨: {os.path.basename(file_path)} -> {os.path.basename(new_file_path)}")
+                
+                # 테이블 업데이트
+                self.main_window._update_table_for_group(group_id)
+                return True
+            
+            return False
+        except Exception as e:
+            print(f"[Move File] 파일 이동 중 오류 발생: {e}")
+            traceback.print_exc()
+            return False
+
     def delete_selected_image(self, target: str):
         """선택된 이미지를 휴지통으로 보내고 그룹 데이터를 업데이트합니다."""
         print(f"[Delete Entry] delete_selected_image called with target: {target}")
@@ -36,11 +196,11 @@ class FileActionHandler:
             self.main_window.previous_selection_index = selected_proxy_index.row() # *** 프록시 행 인덱스 저장 ***
             print(f"[Delete Debug] Stored previous proxy index: {self.main_window.previous_selection_index}")
 
-            representative_item = self.main_window.duplicate_table_model.item(selected_row, 1)
+            representative_item = self.main_window.duplicate_table_model.item(selected_row, 2)
             print("[Delete Debug] Got representative item.")
-            member_item = self.main_window.duplicate_table_model.item(selected_row, 2)
+            member_item = self.main_window.duplicate_table_model.item(selected_row, 3)
             print("[Delete Debug] Got member item.")
-            group_id_item = self.main_window.duplicate_table_model.item(selected_row, 4)
+            group_id_item = self.main_window.duplicate_table_model.item(selected_row, 5)
             print("[Delete Debug] Got group_id item.")
 
             if not (representative_item and member_item and group_id_item):
@@ -157,7 +317,7 @@ class FileActionHandler:
                      print(f"[Delete Debug] Group {group_id} removed or empty, removing rows from table model...")
                      rows_to_remove = []
                      for row in range(self.main_window.duplicate_table_model.rowCount()):
-                          item = self.main_window.duplicate_table_model.item(row, 4) # Group ID
+                          item = self.main_window.duplicate_table_model.item(row, 5) # Group ID
                           if item and item.text() == group_id:
                                print(f"[Delete Debug] Found row {row} to remove for group {group_id}")
                                rows_to_remove.append(row)
@@ -196,9 +356,9 @@ class FileActionHandler:
         selected_row = source_index.row() # 소스 모델 행
         self.main_window.previous_selection_index = selected_proxy_index.row() # *** 프록시 행 인덱스 저장 ***
 
-        representative_item = self.main_window.duplicate_table_model.item(selected_row, 1)
-        member_item = self.main_window.duplicate_table_model.item(selected_row, 2)
-        group_id_item = self.main_window.duplicate_table_model.item(selected_row, 4)
+        representative_item = self.main_window.duplicate_table_model.item(selected_row, 2)
+        member_item = self.main_window.duplicate_table_model.item(selected_row, 3)
+        group_id_item = self.main_window.duplicate_table_model.item(selected_row, 5)
 
         if not (representative_item and member_item and group_id_item):
             QMessageBox.warning(self.main_window, "Warning", "Could not get item data.")
@@ -303,7 +463,7 @@ class FileActionHandler:
                      print(f"[Move Debug] Group {group_id} removed or empty, removing rows from table model...")
                      rows_to_remove = []
                      for row in range(self.main_window.duplicate_table_model.rowCount()):
-                          item = self.main_window.duplicate_table_model.item(row, 4) # Group ID
+                          item = self.main_window.duplicate_table_model.item(row, 5) # Group ID
                           if item and item.text() == group_id:
                                print(f"[Move Debug] Found row {row} to remove for group {group_id}")
                                rows_to_remove.append(row)

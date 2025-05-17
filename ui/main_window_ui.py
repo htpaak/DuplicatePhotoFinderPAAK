@@ -252,7 +252,7 @@ def setup_ui(window: 'MainWindow'):
     window.duplicate_table_proxy_model.setSourceModel(window.duplicate_table_model) # 소스 모델 연결
 
     # --- 테이블 헤더 '#' -> 'Rank', 초기 정렬 Rank 기준 ---
-    window.duplicate_table_model.setHorizontalHeaderLabels(["Rank", "Representative", "Group Member", "Similarity", "Group ID"])
+    window.duplicate_table_model.setHorizontalHeaderLabels(["Select", "Rank", "Representative", "Group Member", "Similarity", "Group ID"])
     
     # 테이블 뷰에는 *프록시* 모델 설정
     window.duplicate_table_view.setModel(window.duplicate_table_proxy_model) 
@@ -263,20 +263,50 @@ def setup_ui(window: 'MainWindow'):
 
     # 열 너비 조정 (인덱스 조정)
     header = window.duplicate_table_view.horizontalHeader()
-    header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # 'Rank' 열
-    header.setSectionResizeMode(1, QHeaderView.Stretch) # Representative
-    header.setSectionResizeMode(2, QHeaderView.Stretch) # Group Member
-    header.setSectionResizeMode(3, QHeaderView.ResizeToContents) # Similarity
-    header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Group ID
-    window.duplicate_table_view.setColumnHidden(4, True) # Group ID 열 숨기기 (인덱스 4)
+    header.setSectionResizeMode(0, QHeaderView.ResizeToContents) # 'Select' 열
+    header.setSectionResizeMode(1, QHeaderView.ResizeToContents) # 'Rank' 열
+    header.setSectionResizeMode(2, QHeaderView.Stretch) # Representative
+    header.setSectionResizeMode(3, QHeaderView.Stretch) # Group Member
+    header.setSectionResizeMode(4, QHeaderView.ResizeToContents) # Similarity
+    header.setSectionResizeMode(5, QHeaderView.ResizeToContents) # Group ID
+    window.duplicate_table_view.setColumnHidden(5, True) # Group ID 열 숨기기 (인덱스 5)
     
     # 초기 정렬 설정 ('Rank' 오름차순)
-    window.duplicate_table_view.sortByColumn(0, Qt.AscendingOrder)
+    window.duplicate_table_view.sortByColumn(1, Qt.AscendingOrder)
 
     # 수직 헤더 숨기기
     window.duplicate_table_view.verticalHeader().setVisible(False)
 
     duplicate_list_layout.addWidget(window.duplicate_table_view)
+
+    # --- 일괄 작업 버튼 레이아웃 추가 --- 
+    batch_action_layout = QHBoxLayout()
+
+    # 선택 관련 버튼 (왼쪽 정렬)
+    select_buttons_layout = QHBoxLayout()
+    window.select_all_button = QPushButton("Select All")
+    window.select_all_button.setToolTip("모든 항목 선택")
+    window.select_none_button = QPushButton("Clear Selection")
+    window.select_none_button.setToolTip("선택 항목 모두 해제")
+    select_buttons_layout.addWidget(window.select_all_button)
+    select_buttons_layout.addWidget(window.select_none_button)
+    batch_action_layout.addLayout(select_buttons_layout)
+
+    # 중간 여백
+    batch_action_layout.addStretch(1)
+
+    # 일괄 작업 버튼 (오른쪽 정렬)
+    action_buttons_layout = QHBoxLayout()
+    window.batch_delete_button = QPushButton("Delete Selected")
+    window.batch_delete_button.setToolTip("선택한 항목을 일괄 삭제")
+    window.batch_move_button = QPushButton("Move Selected")
+    window.batch_move_button.setToolTip("선택한 항목을 일괄 이동")
+    action_buttons_layout.addWidget(window.batch_move_button)
+    action_buttons_layout.addWidget(window.batch_delete_button)
+    batch_action_layout.addLayout(action_buttons_layout)
+
+    duplicate_list_layout.addLayout(batch_action_layout)
+    # --- 일괄 작업 버튼 레이아웃 추가 끝 ---
 
     # 스플리터로 영역 나누기
     splitter = QSplitter(Qt.Vertical)
