@@ -1,5 +1,13 @@
 import sys
 import os
+import time
+import platform
+import subprocess
+import traceback
+import math
+import re
+import copy # 딥 카피를 위한 모듈 추가
+from typing import Optional, List, Dict, Tuple, Any, Set, Union
 import webbrowser # 웹 브라우저 모듈 임포트
 
 # 프로젝트 루트 경로를 sys.path에 추가
@@ -8,8 +16,6 @@ if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
 import shutil # shutil 임포트
-import copy # copy 임포트 추가 (delete/move 메서드 내 import 제거 위함)
-import traceback # traceback 임포트 추가
 from PyQt5.QtWidgets import (
     QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout,
     QLabel, QPushButton, QFrame, QListView, QSplitter, QTableView,
@@ -20,7 +26,6 @@ from PyQt5.QtGui import QStandardItemModel, QIcon, QStandardItem
 # QSize 제거
 from PyQt5.QtCore import Qt, QModelIndex, QThread, pyqtSlot
 from image_processor import ScanWorker, RAW_EXTENSIONS, DuplicateGroupWithSimilarity
-from typing import Optional, Dict, Any, List, Tuple # Tuple 임포트 추가
 from file.undo_manager import UndoManager, WINSHELL_AVAILABLE
 from log_setup import setup_logging # 로깅 설정 임포트
 # import uuid # 그룹 ID 생성을 위해 uuid 임포트 제거
@@ -431,42 +436,74 @@ class MainWindow(QMainWindow):
         next_row_to_select = -1
         # --- 행 수와 인덱스는 프록시 모델 기준 --- 
         new_proxy_row_count = self.duplicate_table_proxy_model.rowCount()
-
-        if new_proxy_row_count > 0:
-            if self.last_acted_group_id:
-                for proxy_row in range(new_proxy_row_count):
-                    # 프록시 인덱스 -> 소스 인덱스
-                    source_index_group_id = self.duplicate_table_proxy_model.mapToSource(
-                        self.duplicate_table_proxy_model.index(proxy_row, 5)
-                    )
-                    # 소스 모델에서 그룹 ID 아이템 가져오기
-                    item = self.duplicate_table_model.item(source_index_group_id.row(), 5)
-                    if item and item.text() == self.last_acted_group_id:
-                        next_row_to_select = proxy_row # 선택할 행은 프록시 행 인덱스
-                        break
-            if next_row_to_select == -1:
-                 if self.previous_selection_index is not None:
-                     # 이전 선택 인덱스도 프록시 기준이었어야 함 (아래 수정 필요)
-                     # 우선 현재 프록시 행 수 내에서 유효한 값으로 조정
-                     next_row_to_select = min(self.previous_selection_index, new_proxy_row_count - 1)
-                 else:
-                     next_row_to_select = 0
-                     
-            if 0 <= next_row_to_select < new_proxy_row_count:
-                 # 선택 및 클릭 이벤트 발생은 프록시 인덱스 사용
-                 self.duplicate_table_view.selectRow(next_row_to_select)
-                 self.on_table_item_clicked(self.duplicate_table_proxy_model.index(next_row_to_select, 0))
-        else:
+        
+        # 테이블이 비어있거나 더 이상 표시할 항목이 없는 경우
+        if new_proxy_row_count == 0:
+            print("[UI Update] Table is empty. Clearing image panels.")
             self.left_image_label.clear()
-            self.left_info_label.setText("Image Info")
+            self.left_info_label.setText("Image Area")
             self.right_image_label.clear()
-            self.right_info_label.setText("Image Info")
+            self.right_info_label.setText("Image Area")
+            
+            # 이미지 캐시도 초기화
+            self.left_image_label._original_pixmap = None
+            self.right_image_label._original_pixmap = None
+            
+            # 테이블 모델도 명시적으로 초기화
+            print("[UI Update] Ensuring table model is updated.")
+            self.duplicate_table_view.reset()
+            
+            # 상태 메시지 업데이트 (선택된 항목 수가 0인 경우)
+            if len(self.selected_items) == 0:
+                self.status_label.setText("선택된 항목: 0개")
+            
+            self.last_acted_group_id = None
+            self.previous_selection_index = None
+            
+            # 일괄 작업 버튼 상태 업데이트
+            self._update_batch_buttons_state()
+            return
+
+        if self.last_acted_group_id:
+            for proxy_row in range(new_proxy_row_count):
+                # 프록시 인덱스 -> 소스 인덱스
+                source_index_group_id = self.duplicate_table_proxy_model.mapToSource(
+                    self.duplicate_table_proxy_model.index(proxy_row, 5)
+                )
+                # 소스 모델에서 그룹 ID 아이템 가져오기
+                item = self.duplicate_table_model.item(source_index_group_id.row(), 5)
+                if item and item.text() == self.last_acted_group_id:
+                    next_row_to_select = proxy_row # 선택할 행은 프록시 행 인덱스
+                    break
+        if next_row_to_select == -1:
+             if self.previous_selection_index is not None:
+                 # 이전 선택 인덱스도 프록시 기준이었어야 함 (아래 수정 필요)
+                 # 우선 현재 프록시 행 수 내에서 유효한 값으로 조정
+                 next_row_to_select = min(self.previous_selection_index, new_proxy_row_count - 1)
+             else:
+                 next_row_to_select = 0
+                 
+        if 0 <= next_row_to_select < new_proxy_row_count:
+             # 선택 및 클릭 이벤트 발생은 프록시 인덱스 사용
+             print(f"[UI Update] Selecting row {next_row_to_select}")
+             self.duplicate_table_view.selectRow(next_row_to_select)
+             self.on_table_item_clicked(self.duplicate_table_proxy_model.index(next_row_to_select, 0))
+        else:
+            # 유효한 행을 선택할 수 없는 경우에도 UI 초기화
+            print("[UI Update] Cannot select a valid row. Clearing image panels.")
+            self.left_image_label.clear()
+            self.left_info_label.setText("Image Area")
+            self.right_image_label.clear()
+            self.right_info_label.setText("Image Area")
             
         self.last_acted_group_id = None
         # --- previous_selection_index 를 프록시 모델 기준으로 저장하도록 수정하겠습니다.
         # (delete/move/restore 함수에서 self.duplicate_table_view.selectedIndexes()[0].row() 사용)
         self.previous_selection_index = None 
         # --- 수정 필요 끝 ---
+        
+        # 테이블 업데이트 확인
+        print(f"[UI Update] Final table state: {self.duplicate_table_model.rowCount()} source rows, {self.duplicate_table_proxy_model.rowCount()} proxy rows")
 
     def _handle_group_state_restore(self, action_details: dict):
         """UndoManager로부터 그룹 상태 복원 요청을 처리합니다."""
@@ -487,6 +524,23 @@ class MainWindow(QMainWindow):
 
         print(f"[MainWindow] Handling group state restore for group {group_id} (Action: {action_type})")
 
+        # 배치 작업에 대한 복원인지 확인
+        is_batch_operation = action_type in ['batch_delete', 'batch_move']
+        if is_batch_operation:
+            print(f"[Restore] 배치 작업 복원 감지: {action_type}")
+            items = action_details.get('items', [])
+            if not items:
+                print("[Restore Error] 배치 작업 항목이 비어 있습니다.")
+                return
+                
+            # 배치 작업의 마지막 항목에 대한 정보로 처리
+            last_item = items[-1]
+            # 기존 action_details를 last_item으로 대체하여 일반 작업처럼 처리
+            action_details = last_item
+            action_type = last_item.get('type', action_type.replace('batch_', ''))
+            group_id = last_item.get('group_id', group_id)
+            print(f"[Restore] 배치 작업의 마지막 항목으로 처리합니다: 그룹={group_id}, 타입={action_type}")
+
         if action_type == UndoManager.ACTION_DELETE or action_type == UndoManager.ACTION_MOVE:
             # --- action_details 에서 스냅샷 데이터 추출 --- 
             restore_snapshot_rep = action_details.get('snapshot_rep')
@@ -503,12 +557,17 @@ class MainWindow(QMainWindow):
             self.group_representatives[group_id] = restore_snapshot_rep
             self.duplicate_groups_data[group_id] = restore_snapshot_members
             self._update_table_for_group(group_id)
+            
+            # 테이블 정렬 유지 
             current_sort_column = self.duplicate_table_view.horizontalHeader().sortIndicatorSection()
             current_sort_order = self.duplicate_table_view.horizontalHeader().sortIndicatorOrder()
             self.duplicate_table_proxy_model.sort(current_sort_column, current_sort_order)
+            
+            # 복원 후 행 찾기 및 선택
             target_rep_path = self.last_acted_representative_path
             target_mem_path = self.last_acted_member_path
             restored_proxy_row_index = -1
+            
             if target_rep_path and target_mem_path: 
                 for proxy_row in range(self.duplicate_table_proxy_model.rowCount()):
                      proxy_index_rep = self.duplicate_table_proxy_model.index(proxy_row, 2)
@@ -522,13 +581,32 @@ class MainWindow(QMainWindow):
                      if current_rep_path == target_rep_path and current_mem_path == target_mem_path:
                           restored_proxy_row_index = proxy_row
                           break 
+                          
             if restored_proxy_row_index != -1:
+                print(f"[Restore] 복원된 행 선택: {restored_proxy_row_index}")
                 self.duplicate_table_view.selectRow(restored_proxy_row_index)
                 self.on_table_item_clicked(self.duplicate_table_proxy_model.index(restored_proxy_row_index, 0))
+            else:
+                print("[Restore] 복원된 행을 찾을 수 없어 UI 업데이트를 호출합니다.")
+                # 복원된 행을 찾지 못했지만 데이터는 복원되었으므로 UI 갱신
+                self._update_ui_after_action()
+                
+            # 배치 작업 복원 후 추가 처리
+            if is_batch_operation:
+                print("[Restore] 배치 작업 복원 후 추가 UI 갱신 처리")
+                # 테이블 뷰 갱신 강제
+                self.duplicate_table_view.update()
+                
+                # 상태 메시지 업데이트 (선택된 항목 수가 0인 경우)
+                if len(self.selected_items) == 0:
+                    self.status_label.setText("선택된 항목: 0개")
+                
+                # 일괄 작업 버튼 상태 업데이트
+                self._update_batch_buttons_state()
         else:
              print(f"[Restore Warning] Unhandled action type for restore: {action_type}")
              # 미지원 타입 등 처리 후, UI 상태 업데이트 (선택 초기화 등 필요시)
-             # self._update_ui_after_action() # 필요 시 호출 
+             # self._update_ui_after_action() # 필요 시 호출
 
     # --- 피드백 링크 여는 메서드 추가 ---
     def open_feedback_link(self):
@@ -655,23 +733,43 @@ class MainWindow(QMainWindow):
             row = item.row()
             
             # 해당 행의 멤버 파일 경로 가져오기 (3번 열)
-            member_path = self.duplicate_table_model.item(row, 3).text()
+            member_item = self.duplicate_table_model.item(row, 3)
+            if not member_item:
+                print(f"[Checkbox] 경고: 행 {row}의 멤버 항목을 찾을 수 없습니다.")
+                return
+                
+            member_path = member_item.text()
             
             # 체크 상태에 따라 선택된 항목 목록 업데이트
             if item.checkState() == Qt.Checked:
-                if member_path not in self.selected_items:
-                    self.selected_items.append(member_path)
-                    print(f"항목 선택됨: {member_path}")
+                # 테이블에 해당 경로가 실제로 존재하는지 확인
+                exists_in_table = False
+                for check_row in range(self.duplicate_table_model.rowCount()):
+                    check_item = self.duplicate_table_model.item(check_row, 3)
+                    if check_item and check_item.text() == member_path:
+                        exists_in_table = True
+                        break
+                        
+                if exists_in_table:
+                    if member_path not in self.selected_items:
+                        self.selected_items.append(member_path)
+                        print(f"[Checkbox] 항목 선택됨: {member_path}")
+                else:
+                    print(f"[Checkbox] 경고: {member_path}가 테이블에 존재하지 않습니다.")
+                    # 체크박스 상태 복원 (시그널 차단)
+                    self.duplicate_table_model.blockSignals(True)
+                    item.setCheckState(Qt.Unchecked)
+                    self.duplicate_table_model.blockSignals(False)
             else:
                 if member_path in self.selected_items:
                     self.selected_items.remove(member_path)
-                    print(f"항목 선택 해제됨: {member_path}")
+                    print(f"[Checkbox] 항목 선택 해제됨: {member_path}")
             
             # 현재 선택된 항목 수 표시
             self.status_label.setText(f"선택된 항목: {len(self.selected_items)}개")
             
             # 디버깅용 로그
-            print(f"현재 선택된 항목 수: {len(self.selected_items)}")
+            print(f"[Checkbox] 현재 선택된 항목 수: {len(self.selected_items)}")
             
             # 일괄 작업 버튼 활성화/비활성화
             self._update_batch_buttons_state()
@@ -679,8 +777,19 @@ class MainWindow(QMainWindow):
     def _update_batch_buttons_state(self):
         """선택된 항목 수에 따라 일괄 작업 버튼 상태 업데이트"""
         has_selected_items = len(self.selected_items) > 0
+        has_table_items = self.duplicate_table_model.rowCount() > 0
+        
+        # 선택 버튼은 테이블에 항목이 있을 때만 활성화
+        self.select_all_button.setEnabled(has_table_items)
+        self.select_none_button.setEnabled(has_selected_items and has_table_items)
+        
+        # 일괄 작업 버튼은 선택된 항목이 있을 때만 활성화
         self.batch_delete_button.setEnabled(has_selected_items)
         self.batch_move_button.setEnabled(has_selected_items)
+        
+        # 디버깅용 로그
+        print(f"[Button State] 테이블 항목 수: {self.duplicate_table_model.rowCount()}, 선택된 항목 수: {len(self.selected_items)}")
+        print(f"[Button State] 버튼 상태 - 전체선택: {self.select_all_button.isEnabled()}, 선택해제: {self.select_none_button.isEnabled()}, 삭제: {self.batch_delete_button.isEnabled()}, 이동: {self.batch_move_button.isEnabled()}")
     
     def select_all_items(self):
         """테이블의 모든 항목 선택"""
@@ -752,9 +861,18 @@ class MainWindow(QMainWindow):
         if reply != QMessageBox.Yes:
             return
         
+        # 전체 항목 갯수 저장 (모든 항목이 삭제되었는지 확인용)
+        total_items_before = self.duplicate_table_model.rowCount()
+        selected_count = len(self.selected_items)
+        print(f"[Batch Delete] 전체 항목 수: {total_items_before}, 선택된 항목 수: {selected_count}")
+        
+        # 삭제할 항목들의 행 인덱스 수집 (나중에 UI 갱신에 사용)
+        rows_to_remove = []
+        selected_paths_copy = self.selected_items.copy()  # 복사본 사용
+        
         # 선택된 항목들에 대한 정보 수집
         items_info = []
-        for member_path in self.selected_items:
+        for member_path in selected_paths_copy:
             # 멤버 파일이 속한 그룹 ID와 대표 파일 경로 찾기
             group_id = None
             representative_path = None
@@ -769,36 +887,121 @@ class MainWindow(QMainWindow):
                     if rep_item and group_id_item:
                         representative_path = rep_item.text()
                         group_id = group_id_item.text()
+                        rows_to_remove.append(row)  # 삭제할 행 인덱스 저장
                         break
             
             if group_id and representative_path:
+                # 각 파일에 대한 필요한 정보를 actions 리스트에 추가
                 items_info.append({
-                    'member_path': member_path,
+                    'deleted_path': member_path,
+                    'group_id': group_id,
                     'representative_path': representative_path,
-                    'group_id': group_id
+                    # Undo 작업을 위한 필요한 정보 추가
+                    'member_paths': [path for path, _, _ in self.duplicate_groups_data.get(group_id, [])],
+                    'snapshot_rep': self.group_representatives.get(group_id),
+                    'snapshot_members': copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
                 })
             else:
                 print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
         
-        # 삭제 작업 수행
-        success_count = 0
-        for item_info in items_info:
-            member_path = item_info['member_path']
-            representative_path = item_info['representative_path']
-            group_id = item_info['group_id']
-            
-            # 파일 액션 핸들러를 통해 삭제 수행
-            if self.file_action_handler.delete_file(member_path, group_id, representative_path):
-                success_count += 1
+        # 배치 삭제 작업 수행 (UndoManager의 batch_delete_files 메서드 사용)
+        success, deleted_files = self.undo_manager.batch_delete_files(items_info)
         
-        # 결과 메시지 표시
-        if success_count > 0:
-            self.status_label.setText(f"{success_count}개 항목 삭제 완료")
+        if success and deleted_files:
+            # 삭제된 파일들에 대한 그룹 데이터 업데이트
+            for action in items_info:
+                if action['deleted_path'] in deleted_files:
+                    self._update_groups_after_deletion(
+                        action['deleted_path'], 
+                        action['group_id'], 
+                        action['representative_path']
+                    )
+            
+            # 테이블에서 선택된 행들을 직접 제거 (UI 즉시 갱신)
+            print(f"[Batch Delete] 테이블에서 {len(rows_to_remove)}개 행을 직접 제거합니다.")
+            for row in sorted(rows_to_remove, reverse=True):
+                try:
+                    self.duplicate_table_model.removeRow(row)
+                except Exception as e:
+                    print(f"[Batch Delete] 행 제거 중 오류: {e}")
+            
+            # 테이블 뷰 강제 갱신
+            self.duplicate_table_view.reset()
+            
+            # 모든 항목 삭제 확인
+            might_be_all_deleted = (selected_count >= total_items_before)
+            current_row_count = self.duplicate_table_model.rowCount()
+            print(f"[Batch Delete] 현재 행 수: {current_row_count}, 가능한 모든 항목 삭제 여부: {might_be_all_deleted}")
+            
+            # 모든 항목이 삭제된 것으로 보이면 테이블 모델 명시적 초기화
+            if might_be_all_deleted or current_row_count == 0:
+                print("[Batch Delete] 모든 항목이 삭제된 것으로 판단됩니다. 테이블 뷰 초기화를 강제합니다.")
+                # 테이블 모델 업데이트 강제
+                self.duplicate_table_view.reset()
+                # 그룹 데이터 초기화 확인
+                if len(self.duplicate_groups_data) == 0 and len(self.group_representatives) == 0:
+                    print("[Batch Delete] 그룹 데이터가 비어있음을 확인했습니다.")
+                else:
+                    print(f"[Batch Delete] 경고: 그룹 데이터가 아직 남아있습니다. 그룹: {len(self.duplicate_groups_data)}, 대표: {len(self.group_representatives)}")
+                    
+                # 이미지 패널 초기화
+                self.left_image_label.clear()
+                self.left_info_label.setText("Image Area")
+                self.right_image_label.clear()
+                self.right_info_label.setText("Image Area")
+            
+            # UI 업데이트 (제거된 항목이 있는 경우에만)
+            if len(rows_to_remove) > 0:
+                print("[Batch Delete] UI 상태 업데이트를 실행합니다.")
+                self._update_ui_after_action()
+            
             # 선택 목록 초기화
             self.selected_items.clear()
             self._update_batch_buttons_state()
+            
+            # 상태 메시지 표시
+            self.status_label.setText(f"{len(deleted_files)}개 항목 삭제 완료")
         else:
             QMessageBox.warning(self, "삭제 실패", "선택한 항목 중 삭제할 수 있는 항목이 없습니다.")
+    
+    def _update_groups_after_deletion(self, deleted_path, group_id, representative_path):
+        """파일 삭제 후 그룹 데이터 업데이트"""
+        # 내부 그룹 데이터에서 파일 제거
+        if group_id in self.duplicate_groups_data:
+            current_group_tuples = self.duplicate_groups_data[group_id]
+            found_index = -1
+            
+            for i, (path, _, _) in enumerate(current_group_tuples):
+                if path == deleted_path:
+                    found_index = i
+                    break
+                    
+            if found_index >= 0:
+                del current_group_tuples[found_index]
+                print(f"[Delete Update] 그룹 {group_id}에서 {os.path.basename(deleted_path)}를 제거했습니다. 남은 멤버: {len(current_group_tuples)}")
+            
+            # 대표 이미지 처리
+            current_representative = self.group_representatives.get(group_id)
+            if deleted_path == current_representative:
+                if current_group_tuples:
+                    new_representative_path, _, _ = current_group_tuples[0]
+                    self.group_representatives[group_id] = new_representative_path
+                    del current_group_tuples[0]
+                    print(f"[Delete Update] 그룹 {group_id}: 새 대표 파일로 {os.path.basename(new_representative_path)}를 설정했습니다.")
+                else:
+                    print(f"[Delete Update] 그룹 {group_id}가 비었습니다. 그룹 데이터를 제거합니다.")
+                    if group_id in self.duplicate_groups_data: 
+                        del self.duplicate_groups_data[group_id]
+                    if group_id in self.group_representatives: 
+                        del self.group_representatives[group_id]
+            else:
+                # 대표가 아닌데 멤버 목록이 비게 되는 경우 (마지막 멤버가 삭제된 경우)
+                if not current_group_tuples:
+                    print(f"[Delete Update] 그룹 {group_id}에서 마지막 멤버가 삭제되었습니다. 그룹 데이터를 제거합니다.")
+                    if group_id in self.duplicate_groups_data: 
+                        del self.duplicate_groups_data[group_id]
+                    if group_id in self.group_representatives: 
+                        del self.group_representatives[group_id]
     
     def move_selected_items(self):
         """선택된 모든 항목 이동"""
@@ -811,9 +1014,18 @@ class MainWindow(QMainWindow):
         if not target_dir:
             return  # 사용자가 취소함
         
+        # 전체 항목 갯수 저장 (모든 항목이 이동되었는지 확인용)
+        total_items_before = self.duplicate_table_model.rowCount()
+        selected_count = len(self.selected_items)
+        print(f"[Batch Move] 전체 항목 수: {total_items_before}, 선택된 항목 수: {selected_count}")
+        
+        # 이동할 항목들의 행 인덱스 수집 (나중에 UI 갱신에 사용)
+        rows_to_remove = []
+        selected_paths_copy = self.selected_items.copy()  # 복사본 사용
+        
         # 선택된 항목들에 대한 정보 수집
         items_info = []
-        for member_path in self.selected_items:
+        for member_path in selected_paths_copy:
             # 멤버 파일이 속한 그룹 ID와 대표 파일 경로 찾기
             group_id = None
             representative_path = None
@@ -828,36 +1040,99 @@ class MainWindow(QMainWindow):
                     if rep_item and group_id_item:
                         representative_path = rep_item.text()
                         group_id = group_id_item.text()
+                        rows_to_remove.append(row)  # 이동할 행 인덱스 저장
                         break
             
             if group_id and representative_path:
+                # 각 파일에 대한 필요한 정보를 actions 리스트에 추가
                 items_info.append({
-                    'member_path': member_path,
+                    'moved_from': member_path,
+                    'destination_folder': target_dir,
+                    'group_id': group_id,
                     'representative_path': representative_path,
-                    'group_id': group_id
+                    # Undo 작업을 위한 필요한 정보 추가
+                    'member_paths': [path for path, _, _ in self.duplicate_groups_data.get(group_id, [])],
+                    'snapshot_rep': self.group_representatives.get(group_id),
+                    'snapshot_members': copy.deepcopy(self.duplicate_groups_data.get(group_id, []))
                 })
             else:
                 print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
         
-        # 이동 작업 수행
-        success_count = 0
-        for item_info in items_info:
-            member_path = item_info['member_path']
-            representative_path = item_info['representative_path']
-            group_id = item_info['group_id']
-            
-            # 파일 액션 핸들러를 통해 이동 수행
-            if self.file_action_handler.move_file(member_path, target_dir, group_id, representative_path):
-                success_count += 1
+        # 배치 이동 작업 수행 (UndoManager의 batch_move_files 메서드 사용)
+        success, moved_files = self.undo_manager.batch_move_files(items_info)
         
-        # 결과 메시지 표시
-        if success_count > 0:
-            self.status_label.setText(f"{success_count}개 항목 이동 완료")
+        if success and moved_files:
+            # 이동된 파일들에 대한 그룹 데이터 업데이트
+            for source_path, destination_path in moved_files:
+                # 해당 원본 파일의 그룹 정보 찾기
+                for action in items_info:
+                    if action['moved_from'] == source_path:
+                        self._update_groups_after_move(
+                            source_path, 
+                            destination_path, 
+                            action['group_id']
+                        )
+                        break
+            
+            # 테이블에서 선택된 행들을 직접 제거 (UI 즉시 갱신)
+            print(f"[Batch Move] 테이블에서 {len(rows_to_remove)}개 행을 직접 제거합니다.")
+            for row in sorted(rows_to_remove, reverse=True):
+                try:
+                    self.duplicate_table_model.removeRow(row)
+                except Exception as e:
+                    print(f"[Batch Move] 행 제거 중 오류: {e}")
+            
+            # 테이블 뷰 강제 갱신
+            self.duplicate_table_view.reset()
+            
+            # 모든 항목 이동 확인
+            might_be_all_moved = (selected_count >= total_items_before)
+            current_row_count = self.duplicate_table_model.rowCount()
+            print(f"[Batch Move] 현재 행 수: {current_row_count}, 가능한 모든 항목 이동 여부: {might_be_all_moved}")
+            
+            # 모든 항목이 이동된 것으로 보이면 테이블 모델 명시적 초기화
+            if might_be_all_moved or current_row_count == 0:
+                print("[Batch Move] 모든 항목이 이동된 것으로 판단됩니다. 테이블 뷰 초기화를 강제합니다.")
+                # 테이블 모델 업데이트 강제
+                self.duplicate_table_view.reset()
+                # 그룹 데이터 초기화 확인
+                if len(self.duplicate_groups_data) == 0 and len(self.group_representatives) == 0:
+                    print("[Batch Move] 그룹 데이터가 비어있음을 확인했습니다.")
+                else:
+                    print(f"[Batch Move] 경고: 그룹 데이터가 아직 남아있습니다. 그룹: {len(self.duplicate_groups_data)}, 대표: {len(self.group_representatives)}")
+            
+            # UI 업데이트 (제거된 항목이 있는 경우에만)
+            if len(rows_to_remove) > 0:
+                print("[Batch Move] UI 상태 업데이트를 실행합니다.")
+                self._update_ui_after_action()
+            
             # 선택 목록 초기화
             self.selected_items.clear()
             self._update_batch_buttons_state()
+            
+            # 상태 메시지 표시
+            self.status_label.setText(f"{len(moved_files)}개 항목 이동 완료")
         else:
             QMessageBox.warning(self, "이동 실패", "선택한 항목 중 이동할 수 있는 항목이 없습니다.")
+    
+    def _update_groups_after_move(self, source_path, destination_path, group_id):
+        """파일 이동 후 그룹 데이터 업데이트"""
+        if group_id in self.duplicate_groups_data:
+            # 내부 그룹 데이터 업데이트
+            current_group_tuples = self.duplicate_groups_data[group_id]
+            for i, (path, similarity, rank) in enumerate(current_group_tuples):
+                if path == source_path:
+                    current_group_tuples[i] = (destination_path, similarity, rank)
+                    print(f"[Move Update] 그룹 데이터 업데이트됨: {os.path.basename(source_path)} -> {os.path.basename(destination_path)}")
+                    break
+            
+            # 대표 이미지 처리
+            if source_path == self.group_representatives.get(group_id):
+                self.group_representatives[group_id] = destination_path
+                print(f"[Move Update] 대표 파일 경로 업데이트됨: {os.path.basename(source_path)} -> {os.path.basename(destination_path)}")
+                
+            return True
+        return False
 
 if __name__ == '__main__':
     # DPI 스케일링 활성화 

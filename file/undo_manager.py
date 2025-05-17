@@ -150,7 +150,7 @@ class UndoManager(QObject):
     
     def undo_last_action(self):
         """
-        마지막 작업 취소 (삭제, 이동, 복사)
+        마지막 작업 취소 (삭제, 이동, 복사, 배치 작업)
         
         Returns:
             tuple: (성공 여부, 복원된 파일 경로)
@@ -168,8 +168,10 @@ class UndoManager(QObject):
             result = self._undo_deletion(last_action)
         elif action_type == self.ACTION_MOVE:
             result = self._undo_move(last_action)
-        # elif action_type == self.ACTION_COPY:
-        #     result = self._undo_copy(last_action)
+        elif action_type == 'batch_delete':
+            result = self._undo_batch_deletion(last_action)
+        elif action_type == 'batch_move':
+            result = self._undo_batch_move(last_action)
         else:
             self.show_message(f"Unknown action type: {action_type}", 'error')
             result = False, None
@@ -237,58 +239,324 @@ class UndoManager(QObject):
     
     def _restore_from_trash(self, original_path):
         """
-        휴지통에서 파일 복원 시도
-        
+        휴지통에서 파일 복원 시도 (윈도우에서는 winshell 사용, 다른 OS에서는 대안 메커니즘 사용)
+
         Args:
-            original_path: 원본 파일 경로
-            
+            original_path (str): 복원할 파일의 원래 경로
+
         Returns:
             bool: 복원 성공 여부
         """
+        # 먼저 파일이 이미 존재하는지 확인
+        if os.path.exists(original_path):
+            print(f"[UndoManager] File already exists at original path: {original_path}")
+            return True  # 이미 원래 위치에 있음
+        
         try:
-            file_name = os.path.basename(original_path)
-            
-            # Windows 환경에서 winshell을 사용하여 휴지통 검색
             if platform.system() == 'Windows' and WINSHELL_AVAILABLE:
-                # 휴지통의 모든 항목을 검색
-                recycled_items = list(winshell.recycle_bin())
+                # Windows에서 winshell을 사용하여 파일 찾기 시도
+                basename = os.path.basename(original_path)
+                found_in_recycle_bin = False
                 
-                # 원본 파일명과 일치하는 항목 찾기
-                for item in recycled_items:
+                # 휴지통의 각 항목에 대해
+                for item in winshell.recycle_bin():
                     try:
-                         # 간혹 original_filename() 접근 시 오류 발생 가능성 있음
-                         item_orig_path = item.original_filename()
-                         item_name = os.path.basename(item_orig_path)
-                         if item_name.lower() == file_name.lower():
-                             print(f"Found in trash: {item_orig_path}, attempting to restore to {original_path}")
-                             winshell.undelete(item_orig_path)
-                             # 복원 후 경로 확인 및 필요시 이동
-                             if os.path.exists(original_path):
-                                 return True
-                             elif os.path.exists(item_orig_path):
-                                  print(f"Restored to {item_orig_path}, moving to {original_path}")
-                                  shutil.move(item_orig_path, original_path)
-                                  return True
-                             else:
-                                  print(f"Undelete called but file not found at either {original_path} or {item_orig_path}")
-                                  # 다른 경로에 복원되었을 가능성? (탐색 어려움)
-                    except Exception as ie:
-                         print(f"Error accessing recycle bin item: {ie}")
+                        recycle_name = os.path.basename(item.original_filename())
+                        if recycle_name == basename:
+                            found_in_recycle_bin = True
+                            print(f"[UndoManager] Found {basename} in recycle bin")
+                            # 원본 위치로 복원
+                            item.undelete()
+                            return True
+                    except Exception as inner_e:
+                        print(f"[UndoManager] Error accessing recycle bin item: {inner_e}")
+                        continue
                 
-                # 파일을 찾지 못한 경우
-                self.show_message(f"Could not find {file_name} in the recycle bin", 'warning')
+                if not found_in_recycle_bin:
+                    self.show_message(f"File not found in recycle bin: {basename}", 'warning')
+                    return False
+            else:
+                # Windows가 아니거나 winshell이 없는 경우
+                # 다른 OS의 휴지통 접근은 복잡하므로 알림만 표시
+                message = f"Manual restore needed: Please restore '{os.path.basename(original_path)}' from trash"
+                self.show_message(message)
                 return False
                 
-            # 다른 OS 환경에서는 대체 방법 제공
-            else:
-                # 파일 목록에만 추가 (실제 파일은 복원하지 않음)
-                self.show_message("Recycle bin restoration is only supported on Windows.", 'warning')
-                return False # Windows 외 OS에서는 복원 불가로 처리
-                
         except Exception as e:
-            self.show_message(f"Failed to restore from recycle bin: {e}", 'error')
+            self.show_message(f"Failed to restore from trash: {e}", 'error')
             return False
-    
+        
+        return False
+            
+    def batch_delete_files(self, delete_actions: List[dict]) -> Tuple[bool, List[str]]:
+        """
+        여러 파일을 한 번에 삭제하고 이를 하나의 Undo 작업으로 추적합니다.
+        
+        Args:
+            delete_actions: 삭제할 파일들의 정보 목록 (각 항목은 deleted_path, group_id, representative_path,
+                            member_paths, snapshot_rep, snapshot_members 정보를 포함하는 딕셔너리)
+                            
+        Returns:
+            tuple: (성공 여부, 삭제된 파일 경로 목록)
+        """
+        if not delete_actions:
+            print("[UndoManager] No files to delete in batch")
+            return False, []
+            
+        successful_deletes = []
+        failed_deletes = []
+        
+        # 모든 파일에 대해 삭제 시도
+        for action in delete_actions:
+            deleted_path = action.get('deleted_path')
+            if not deleted_path or not os.path.exists(deleted_path):
+                failed_deletes.append(deleted_path if deleted_path else "Unknown path")
+                continue
+                
+            try:
+                normalized_path = os.path.normpath(deleted_path)
+                send2trash.send2trash(normalized_path)
+                successful_deletes.append(deleted_path)
+                print(f"[UndoManager] File sent to trash: {normalized_path}")
+            except Exception as e:
+                print(f"[UndoManager] Failed to delete file: {e}\nPath: {deleted_path}")
+                failed_deletes.append(deleted_path)
+                
+        # 모든 삭제가 실패한 경우
+        if not successful_deletes:
+            if failed_deletes:
+                error_msg = f"Failed to delete {len(failed_deletes)} files."
+                self.show_message(error_msg, 'error')
+            return False, []
+            
+        # 실패한 항목이 있는 경우 경고 표시
+        if failed_deletes:
+            warn_msg = f"Failed to delete {len(failed_deletes)} of {len(delete_actions)} files."
+            self.show_message(warn_msg, 'warning')
+            
+        # 배치 작업을 Undo 스택에 추가
+        batch_action = {
+            'type': 'batch_delete',
+            'items': [action for action in delete_actions if action.get('deleted_path') in successful_deletes],
+            'timestamp': time.time()
+        }
+        self.actions.append(batch_action)
+        self.undo_status_changed.emit(True)
+        
+        return True, successful_deletes
+        
+    def batch_move_files(self, move_actions: List[dict]) -> Tuple[bool, List[Tuple[str, str]]]:
+        """
+        여러 파일을 한 번에 이동하고 이를 하나의 Undo 작업으로 추적합니다.
+        
+        Args:
+            move_actions: 이동할 파일들의 정보 목록 (각 항목은 moved_from, destination_folder, group_id, 
+                          representative_path, member_paths, snapshot_rep, snapshot_members 정보를 포함하는 딕셔너리)
+                            
+        Returns:
+            tuple: (성공 여부, 이동된 파일 경로와 대상 경로의 튜플 목록)
+        """
+        if not move_actions:
+            print("[UndoManager] No files to move in batch")
+            return False, []
+            
+        successful_moves = []
+        failed_moves = []
+        
+        # 모든 파일에 대해 이동 시도
+        for action in move_actions:
+            source_path = action.get('moved_from')
+            dest_folder = action.get('destination_folder')
+            
+            if not source_path or not os.path.exists(source_path):
+                failed_moves.append((source_path if source_path else "Unknown source", 
+                                    dest_folder if dest_folder else "Unknown destination"))
+                continue
+                
+            if not dest_folder or not os.path.isdir(dest_folder):
+                failed_moves.append((source_path, dest_folder if dest_folder else "Invalid destination"))
+                continue
+                
+            try:
+                base_filename = os.path.basename(source_path)
+                destination_path = os.path.join(dest_folder, base_filename)
+                
+                # 대상 경로에 이미 파일이 있는 경우 확인
+                if os.path.exists(destination_path):
+                    # 배치 작업에서는 묻지 않고 경로를 변경하는 방식으로 처리
+                    name, ext = os.path.splitext(base_filename)
+                    timestamp = time.strftime("_%Y%m%d_%H%M%S")
+                    new_filename = f"{name}{timestamp}{ext}"
+                    destination_path = os.path.join(dest_folder, new_filename)
+                    
+                shutil.move(source_path, destination_path)
+                # 성공한 이동 정보와 함께 원래 경로 정보도 저장
+                action['moved_to'] = destination_path
+                successful_moves.append((source_path, destination_path))
+                print(f"[UndoManager] File moved: {source_path} -> {destination_path}")
+            except Exception as e:
+                print(f"[UndoManager] Failed to move file: {e}\nFrom: {source_path}")
+                failed_moves.append((source_path, dest_folder))
+                
+        # 모든 이동이 실패한 경우
+        if not successful_moves:
+            if failed_moves:
+                error_msg = f"Failed to move {len(failed_moves)} files."
+                self.show_message(error_msg, 'error')
+            return False, []
+            
+        # 실패한 항목이 있는 경우 경고 표시
+        if failed_moves:
+            warn_msg = f"Failed to move {len(failed_moves)} of {len(move_actions)} files."
+            self.show_message(warn_msg, 'warning')
+            
+        # 배치 작업을 Undo 스택에 추가
+        batch_action = {
+            'type': 'batch_move',
+            'items': [action for i, action in enumerate(move_actions) 
+                     if i < len(successful_moves) and action.get('moved_from') == successful_moves[i][0]],
+            'timestamp': time.time()
+        }
+        self.actions.append(batch_action)
+        self.undo_status_changed.emit(True)
+        
+        return True, successful_moves
+        
+    def _undo_batch_deletion(self, batch_action):
+        """
+        배치 삭제 작업 취소 메서드
+        
+        Args:
+            batch_action: 배치 삭제 작업 정보 (items 키에 개별 삭제 항목 목록 포함)
+            
+        Returns:
+            tuple: (성공 여부, 복원된 파일 경로 목록)
+        """
+        items = batch_action.get('items', [])
+        if not items:
+            self.show_message("Invalid batch delete action data.", 'error')
+            return False, None
+            
+        success_count = 0
+        failed_count = 0
+        restored_paths = []
+        
+        # 가장 최근 항목의 그룹 정보를 이용하여 UI 복원에 사용할 대표 정보
+        last_group_id = None
+        
+        # 배치의 각 항목에 대해 복원 시도
+        for item in items:
+            deleted_path = item.get('deleted_path')
+            group_id = item.get('group_id')
+            
+            if not deleted_path or not group_id:
+                failed_count += 1
+                continue
+                
+            # 마지막 처리된 그룹 ID 기록 (UI 복원용)
+            last_group_id = group_id
+                
+            if self._restore_from_trash(deleted_path):
+                success_count += 1
+                restored_paths.append(deleted_path)
+            else:
+                failed_count += 1
+                
+        # 전체 결과 처리
+        if success_count > 0:
+            # 가장 마지막으로 복원된 항목의 그룹 정보를 이용하여 UI 업데이트 시그널 발생
+            if last_group_id and items:
+                # 배치의 마지막 항목으로 복원 시그널 발생
+                self.group_state_restore_needed.emit(items[-1])
+                
+            result_message = f"{success_count}개 파일 복원 완료."
+            if failed_count > 0:
+                result_message += f" {failed_count}개 파일 복원 실패."
+            print(f"[UndoManager] {result_message}")
+            
+            return True, restored_paths
+        else:
+            self.show_message("Failed to restore any files from trash.", 'error')
+            return False, None
+            
+    def _undo_batch_move(self, batch_action):
+        """
+        배치 이동 작업 취소 메서드
+        
+        Args:
+            batch_action: 배치 이동 작업 정보 (items 키에 개별 이동 항목 목록 포함)
+            
+        Returns:
+            tuple: (성공 여부, 복원된 파일 경로 목록)
+        """
+        items = batch_action.get('items', [])
+        if not items:
+            self.show_message("Invalid batch move action data.", 'error')
+            return False, None
+            
+        success_count = 0
+        failed_count = 0
+        restored_paths = []
+        
+        # 가장 최근 항목의 그룹 정보를 이용하여 UI 복원에 사용할 대표 정보
+        last_group_id = None
+        
+        # 배치의 각 항목에 대해 이동 취소 시도
+        for item in items:
+            moved_from = item.get('moved_from')
+            moved_to = item.get('moved_to')
+            group_id = item.get('group_id')
+            
+            if not moved_from or not moved_to or not group_id:
+                failed_count += 1
+                continue
+                
+            # 마지막 처리된 그룹 ID 기록 (UI 복원용)
+            last_group_id = group_id
+                
+            try:
+                # 이동 취소 시도 (현재 위치에서 원래 위치로)
+                if os.path.exists(moved_to):
+                    # 원래 위치에 파일이 이미 있는지 확인
+                    if os.path.exists(moved_from):
+                        # 이름 충돌 시 새 이름 생성
+                        dirname = os.path.dirname(moved_from)
+                        basename = os.path.basename(moved_from)
+                        name, ext = os.path.splitext(basename)
+                        timestamp = time.strftime("_restored_%Y%m%d_%H%M%S")
+                        new_path = os.path.join(dirname, f"{name}{timestamp}{ext}")
+                        shutil.move(moved_to, new_path)
+                        restored_paths.append(new_path)
+                    else:
+                        # 원래 위치로 이동
+                        shutil.move(moved_to, moved_from)
+                        restored_paths.append(moved_from)
+                    
+                    success_count += 1
+                else:
+                    failed_count += 1
+                    print(f"[UndoManager] File not found for move undo: {moved_to}")
+            except Exception as e:
+                failed_count += 1
+                print(f"[UndoManager] Error undoing move: {e}")
+                
+        # 전체 결과 처리
+        if success_count > 0:
+            # 가장 마지막으로 복원된 항목의 그룹 정보를 이용하여 UI 업데이트 시그널 발생
+            if last_group_id and items:
+                # 배치의 마지막 항목으로 복원 시그널 발생
+                self.group_state_restore_needed.emit(items[-1])
+                
+            result_message = f"{success_count}개 파일 이동 취소 완료."
+            if failed_count > 0:
+                result_message += f" {failed_count}개 파일 이동 취소 실패."
+            print(f"[UndoManager] {result_message}")
+            
+            return True, restored_paths
+        else:
+            self.show_message("Failed to restore any moved files.", 'error')
+            return False, None
+            
     # _add_to_table 메서드는 더 이상 직접 사용되지 않음 (제거 또는 주석 처리)
     # def _add_to_table(self, action_details: Dict[str, Any]) -> bool:
     #     ... 

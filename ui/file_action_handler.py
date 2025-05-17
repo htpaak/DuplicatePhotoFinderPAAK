@@ -17,7 +17,7 @@ class FileActionHandler:
 
     def delete_file(self, file_path: str, group_id: str, representative_path: str) -> bool:
         """특정 파일을 삭제하고 그룹 데이터를 업데이트합니다. 
-        일괄 작업용 도우미 함수입니다.
+        단일 파일 삭제용 함수입니다. 여러 파일을 일괄 삭제하려면 UndoManager.batch_delete_files를 사용하세요.
         
         Args:
             file_path: 삭제할 파일 경로
@@ -109,7 +109,7 @@ class FileActionHandler:
     
     def move_file(self, file_path: str, target_dir: str, group_id: str, representative_path: str) -> bool:
         """특정 파일을 다른 위치로 이동하고 그룹 데이터를 업데이트합니다.
-        일괄 작업용 도우미 함수입니다.
+        단일 파일 이동용 함수입니다. 여러 파일을 일괄 이동하려면 UndoManager.batch_move_files를 사용하세요.
         
         Args:
             file_path: 이동할 파일 경로
