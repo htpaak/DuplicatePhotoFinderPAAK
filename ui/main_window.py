@@ -59,6 +59,8 @@ class MainWindow(QMainWindow):
         self.last_acted_member_path: Optional[str] = None
         # 선택된 항목 관리를 위한 변수 추가
         self.selected_items: List[str] = [] # 선택된 멤버 파일 경로 목록
+        # 삭제된 항목 추적을 위한 변수 추가
+        self.last_deleted_items: List[Dict] = [] # 마지막으로 삭제된 항목 정보 목록
 
         # --- 파일 액션 핸들러 인스턴스 생성 --- 
         self.file_action_handler = FileActionHandler(self)
@@ -83,6 +85,8 @@ class MainWindow(QMainWindow):
         self.undo_button.clicked.connect(self.undo_manager.undo_last_action)
         self.undo_manager.undo_status_changed.connect(self.update_undo_button_state)
         self.undo_manager.group_state_restore_needed.connect(self._handle_group_state_restore)
+        # 배치 복원 완료 시그널 연결 추가
+        self.undo_manager.batch_undo_completed.connect(self._handle_batch_undo_completed)
         
         # 새로 추가한 버튼들의 시그널 연결
         self.left_open_file_button.clicked.connect(lambda: self.open_selected_file('original'))
@@ -98,7 +102,7 @@ class MainWindow(QMainWindow):
         self.select_none_button.clicked.connect(self.clear_selection)
         self.batch_delete_button.clicked.connect(self.delete_selected_items)
         self.batch_move_button.clicked.connect(self.move_selected_items)
-        # --- 시그널 연결 끝 --- 
+        # --- 시그널 연결 끝 ---
 
         self._center_window() # 창 중앙 정렬 메서드 호출
 
@@ -364,6 +368,23 @@ class MainWindow(QMainWindow):
         before_proxy_rows = self.duplicate_table_proxy_model.rowCount()
         print(f"[UpdateTable Debug] 기존 테이블 상태: 소스 행 수={before_source_rows}, 프록시 행 수={before_proxy_rows}")
         
+        # 그룹 데이터 유효성 확인
+        if group_id not in self.duplicate_groups_data or group_id not in self.group_representatives:
+            print(f"[UpdateTable Debug] 그룹 ID {group_id}에 대한 데이터가 없거나 불완전합니다.")
+            return
+            
+        # 대표 파일 존재 확인
+        representative = self.group_representatives.get(group_id)
+        if not representative:
+            print(f"[UpdateTable Debug] 그룹 ID {group_id}에 대한 대표 파일이 없습니다.")
+            return
+            
+        # 멤버 데이터 확인
+        members_data = self.duplicate_groups_data.get(group_id, [])
+        if not members_data:
+            print(f"[UpdateTable Debug] 그룹 ID {group_id}에 대한 멤버 데이터가 없습니다.")
+            return
+        
         # 1. 해당 group_id의 모든 행 제거 (소스 모델 기준)
         rows_to_remove = []
         print(f"[UpdateTable Debug] Searching rows to remove...") # 로그 2
@@ -393,125 +414,155 @@ class MainWindow(QMainWindow):
             print(f"[UpdateTable Debug] No existing rows found for group {group_id}.")
 
         # 2. 업데이트된 그룹 정보로 새 행 추가
-        if group_id in self.duplicate_groups_data:
-            representative = self.group_representatives.get(group_id)
-            # --- Rank 포함된 멤버 데이터 가져오기 --- 
-            members_data = self.duplicate_groups_data[group_id]
-            print(f"[UpdateTable Debug] Preparing to add new rows. Rep: {os.path.basename(representative) if representative else 'None'}, Members count: {len(members_data)}") # 로그 6
+        print(f"[UpdateTable Debug] Preparing to add new rows. Rep: {os.path.basename(representative) if representative else 'None'}, Members count: {len(members_data)}") # 로그 6
+
+        # --- 테이블 모델 신호 잠시 차단 ---
+        self.duplicate_table_model.blockSignals(True)
+        self.duplicate_table_proxy_model.blockSignals(True)
+        
+        # --- Rank 순서대로 정렬하여 행 추가 ---
+        # 먼저 Rank 기준으로 정렬
+        sorted_members = sorted(members_data, key=lambda x: x[2])  # Rank(인덱스 2)로 정렬
+        print(f"[UpdateTable Debug] Sorted members by rank: {[(os.path.basename(path), rank) for path, _, rank in sorted_members]}")
+        
+        # Rank 순서대로 테이블에 행 추가 (가장 작은 Rank부터)
+        current_rank_to_row_map = {}  # 현재 테이블의 Rank -> 행 인덱스 매핑
+        
+        # 먼저 현재 테이블에서 Rank 값을 조사
+        for row in range(self.duplicate_table_model.rowCount()):
+            rank_item = self.duplicate_table_model.item(row, 1)  # Rank는 1번 열
+            if rank_item:
+                try:
+                    rank_value = int(rank_item.text())
+                    current_rank_to_row_map[rank_value] = row
+                except ValueError:
+                    pass
+        
+        # 테이블의 현재 행 수 (새 행을 추가할 때의 기본 위치)
+        current_row_count = self.duplicate_table_model.rowCount()
+        
+        # 파일 존재 확인 플래그
+        added_any_row = False
+        
+        # 각 멤버에 대해 테이블에 행 추가
+        for member_path, similarity, rank in sorted_members:
+            # 멤버 파일이 대표 파일과 같으면 건너뜀
+            if representative == member_path: 
+                print(f"[UpdateTable Debug] Skipping representative: {os.path.basename(member_path)}")
+                continue
             
-            if representative and members_data: 
-                # --- 테이블 모델 신호 잠시 차단 ---
-                self.duplicate_table_model.blockSignals(True)
-                self.duplicate_table_proxy_model.blockSignals(True)
-                
-                # --- Rank 순서대로 정렬하여 행 추가 ---
-                # 먼저 Rank 기준으로 정렬
-                sorted_members = sorted(members_data, key=lambda x: x[2])  # Rank(인덱스 2)로 정렬
-                print(f"[UpdateTable Debug] Sorted members by rank: {[(os.path.basename(path), rank) for path, _, rank in sorted_members]}")
-                
-                # Rank 순서대로 테이블에 행 추가 (가장 작은 Rank부터)
-                current_rank_to_row_map = {}  # 현재 테이블의 Rank -> 행 인덱스 매핑
-                
-                # 먼저 현재 테이블에서 Rank 값을 조사
-                for row in range(self.duplicate_table_model.rowCount()):
-                    rank_item = self.duplicate_table_model.item(row, 1)  # Rank는 1번 열
-                    if rank_item:
-                        try:
-                            rank_value = int(rank_item.text())
-                            current_rank_to_row_map[rank_value] = row
-                        except ValueError:
-                            pass
-                
-                # 테이블의 현재 행 수 (새 행을 추가할 때의 기본 위치)
-                current_row_count = self.duplicate_table_model.rowCount()
-                
-                # 각 멤버에 대해 테이블에 행 추가
-                for member_path, similarity, rank in sorted_members:
-                    if representative == member_path: 
-                        print(f"[UpdateTable Debug] Skipping representative: {os.path.basename(member_path)}")
-                        continue
-                    
-                    print(f"[UpdateTable Debug] Adding row for: {os.path.basename(member_path)}, Rank: {rank}")
-                    
-                    # 체크박스 아이템 생성
-                    item_checkbox = QStandardItem()
-                    item_checkbox.setCheckable(True)
-                    item_checkbox.setCheckState(Qt.Unchecked)
-                    
-                    # 'Rank' 열 아이템 생성
-                    item_rank = QStandardItem(str(rank))
-                    item_rank.setTextAlignment(Qt.AlignCenter)
-                    item_rank.setData(rank, Qt.UserRole + 6) # Rank 정렬용 데이터 (Role +6)
-                    item_rank.setFlags(item_rank.flags() & ~Qt.ItemIsEditable)
-                    
-                    # 대표 이미지 아이템
-                    item_representative = QStandardItem(representative)
-                    item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
-                    
-                    # 멤버 이미지 아이템
-                    item_member = QStandardItem(member_path)
-                    item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
-                    
-                    # 유사도 아이템
-                    similarity_text = f"{similarity}%"
-                    item_similarity = QStandardItem(similarity_text)
-                    item_similarity.setData(similarity, Qt.UserRole + 4)
-                    item_similarity.setTextAlignment(Qt.AlignCenter)
-                    item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
-                    
-                    # 그룹 ID 아이템
-                    item_group_id = QStandardItem(group_id)
-                    item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
-                    
-                    # 행 아이템 생성
-                    row_items = [item_checkbox, item_rank, item_representative, item_member, item_similarity, item_group_id]
-                    
-                    # 행을 추가할 위치 결정
-                    # 현재 Rank보다 큰 Rank 값 중 가장 작은 것을 찾아 그 앞에 삽입
-                    insert_position = current_row_count  # 기본값: 테이블의 맨 끝
-                    
-                    # 1. 현재 테이블에서 현재 Rank보다 큰 최소 Rank의 행을 찾아 그 앞에 삽입
-                    higher_ranks = [r for r in current_rank_to_row_map.keys() if r > rank]
-                    if higher_ranks:
-                        min_higher_rank = min(higher_ranks)
-                        insert_position = current_rank_to_row_map[min_higher_rank]
-                        print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 Rank {min_higher_rank} 앞에 삽입 (행 인덱스: {insert_position})")
+            # 파일 존재 여부 확인 (선택적)
+            # if not os.path.exists(member_path) or not os.path.exists(representative):
+            #     print(f"[UpdateTable Debug] 파일이 존재하지 않아 건너뜀: 대표={os.path.exists(representative)}, 멤버={os.path.exists(member_path)}")
+            #     continue
+            
+            print(f"[UpdateTable Debug] Adding row for: {os.path.basename(member_path)}, Rank: {rank}")
+            
+            # 체크박스 아이템 생성
+            item_checkbox = QStandardItem()
+            item_checkbox.setCheckable(True)
+            item_checkbox.setCheckState(Qt.Unchecked)
+            
+            # 'Rank' 열 아이템 생성
+            item_rank = QStandardItem(str(rank))
+            item_rank.setTextAlignment(Qt.AlignCenter)
+            item_rank.setData(rank, Qt.UserRole + 6) # Rank 정렬용 데이터 (Role +6)
+            item_rank.setFlags(item_rank.flags() & ~Qt.ItemIsEditable)
+            
+            # 대표 이미지 아이템
+            item_representative = QStandardItem(representative)
+            item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
+            
+            # 멤버 이미지 아이템
+            item_member = QStandardItem(member_path)
+            item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+            
+            # 유사도 아이템
+            similarity_text = f"{similarity}%"
+            item_similarity = QStandardItem(similarity_text)
+            item_similarity.setData(similarity, Qt.UserRole + 4)
+            item_similarity.setTextAlignment(Qt.AlignCenter)
+            item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
+            
+            # 그룹 ID 아이템
+            item_group_id = QStandardItem(group_id)
+            item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
+            
+            # 행 아이템 생성
+            row_items = [item_checkbox, item_rank, item_representative, item_member, item_similarity, item_group_id]
+            
+            # 행을 추가할 위치 결정
+            # 현재 Rank보다 큰 Rank 값 중 가장 작은 것을 찾아 그 앞에 삽입
+            insert_position = current_row_count  # 기본값: 테이블의 맨 끝
+            
+            try:
+                # 1. 현재 테이블에서 현재 Rank보다 큰 최소 Rank의 행을 찾아 그 앞에 삽입
+                higher_ranks = [r for r in current_rank_to_row_map.keys() if r > rank]
+                if higher_ranks:
+                    min_higher_rank = min(higher_ranks)
+                    insert_position = current_rank_to_row_map[min_higher_rank]
+                    print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 Rank {min_higher_rank} 앞에 삽입 (행 인덱스: {insert_position})")
+                else:
+                    # 현재 Rank보다 큰 Rank가 없으면, 유사한 Rank 행 뒤에 삽입
+                    lower_ranks = [r for r in current_rank_to_row_map.keys() if r <= rank]
+                    if lower_ranks:
+                        max_lower_rank = max(lower_ranks)
+                        insert_position = current_rank_to_row_map[max_lower_rank] + 1
+                        print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 Rank {max_lower_rank} 뒤에 삽입 (행 인덱스: {insert_position})")
                     else:
-                        # 현재 Rank보다 큰 Rank가 없으면, 유사한 Rank 행 뒤에 삽입
-                        lower_ranks = [r for r in current_rank_to_row_map.keys() if r <= rank]
-                        if lower_ranks:
-                            max_lower_rank = max(lower_ranks)
-                            insert_position = current_rank_to_row_map[max_lower_rank] + 1
-                            print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 Rank {max_lower_rank} 뒤에 삽입 (행 인덱스: {insert_position})")
-                        else:
-                            print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 테이블 맨 끝에 삽입 (행 인덱스: {insert_position})")
-                    
-                    # 행 삽입
-                    self.duplicate_table_model.insertRow(insert_position, row_items)
-                    print(f"[UpdateTable Debug] 행 삽입 완료: 위치 {insert_position}, Rank {rank}")
-                    
-                    # 새 행 정보를 맵에 추가 (후속 삽입을 위해)
-                    current_rank_to_row_map[rank] = insert_position
-                    
-                    # 삽입 위치 이후의 행 인덱스 업데이트
-                    for r, row_idx in current_rank_to_row_map.items():
-                        if row_idx >= insert_position and r != rank:
-                            current_rank_to_row_map[r] = row_idx + 1
-                    
-                    # 현재 행 수 증가
-                    current_row_count += 1
+                        print(f"[UpdateTable Debug] 행 삽입: Rank {rank}를 테이블 맨 끝에 삽입 (행 인덱스: {insert_position})")
                 
-                # 테이블 모델 신호 차단 해제
-                self.duplicate_table_model.blockSignals(False)
-                self.duplicate_table_proxy_model.blockSignals(False)
+                # 행 삽입
+                self.duplicate_table_model.insertRow(insert_position, row_items)
+                added_any_row = True
+                print(f"[UpdateTable Debug] 행 삽입 완료: 위치 {insert_position}, Rank {rank}")
                 
-                # 테이블에 추가된 행 수 확인
-                print(f"[UpdateTable Debug] Final rows count: {self.duplicate_table_model.rowCount()}")
+                # 새 행 정보를 맵에 추가 (후속 삽입을 위해)
+                current_rank_to_row_map[rank] = insert_position
                 
-            else: 
-                print(f"[UpdateTable Debug] No representative or member data found for group {group_id}, not adding rows.") # 로그 10
-        else:
-            print(f"[UpdateTable Debug] Group {group_id} not found in duplicate_groups_data, not adding rows.") # 로그 11
+                # 삽입 위치 이후의 행 인덱스 업데이트
+                for r, row_idx in current_rank_to_row_map.items():
+                    if row_idx >= insert_position and r != rank:
+                        current_rank_to_row_map[r] = row_idx + 1
+                
+                # 현재 행 수 증가
+                current_row_count += 1
+            except Exception as e:
+                print(f"[UpdateTable Error] 행 삽입 중 오류 발생: {e}")
+                import traceback
+                traceback.print_exc()
+        
+        # 행이 추가되었는지 확인
+        if not added_any_row:
+            print(f"[UpdateTable Warning] 그룹 {group_id}에 대해 테이블에 행이 추가되지 않았습니다.")
+            
+            # 간단한 방법으로 행 추가 시도
+            try:
+                for member_path, similarity, rank in sorted_members:
+                    if representative == member_path:
+                        continue
+                        
+                    row_items = [
+                        QStandardItem(),  # 체크박스
+                        QStandardItem(str(rank)),  # Rank
+                        QStandardItem(representative),  # 대표
+                        QStandardItem(member_path),  # 멤버
+                        QStandardItem(f"{similarity}%"),  # 유사도
+                        QStandardItem(group_id)  # 그룹 ID
+                    ]
+                    
+                    # 행 추가
+                    self.duplicate_table_model.appendRow(row_items)
+                    print(f"[UpdateTable Debug] 행 추가 시도 (단순 방법): {os.path.basename(member_path)}")
+            except Exception as e2:
+                print(f"[UpdateTable Error] 단순 행 추가 중 오류 발생: {e2}")
+        
+        # 테이블 모델 신호 차단 해제
+        self.duplicate_table_model.blockSignals(False)
+        self.duplicate_table_proxy_model.blockSignals(False)
+        
+        # 테이블에 추가된 행 수 확인
+        print(f"[UpdateTable Debug] Final rows count: {self.duplicate_table_model.rowCount()}")
         
         # 현재 테이블 상태 확인
         after_source_rows = self.duplicate_table_model.rowCount()
@@ -630,7 +681,7 @@ class MainWindow(QMainWindow):
         group_id = action_details.get('group_id')
         self.last_acted_group_id = group_id 
 
-        if not group_id:
+        if not group_id and action_type not in ['batch_delete', 'batch_move']:
              print("[Restore Error] Group ID not found in action details.")
              return
 
@@ -643,19 +694,214 @@ class MainWindow(QMainWindow):
         # 검색 필터가 있는 경우 임시로 제거
         has_filter = bool(self.duplicate_table_proxy_model.filterRegExp().pattern())
         saved_filter = self.duplicate_table_proxy_model.filterRegExp()
-        
         if has_filter:
-            print("[Restore Debug] 임시로 필터 제거")
+            print("[Restore Debug] 필터 일시적으로 제거")
             self.duplicate_table_proxy_model.setFilterRegExp("")
         
-        # 테이블 초기 상태 출력
-        initial_source_rows = self.duplicate_table_model.rowCount()
-        initial_proxy_rows = self.duplicate_table_proxy_model.rowCount()
-        print(f"[Restore Debug] 초기 테이블 상태: 소스 행 수={initial_source_rows}, 프록시 행 수={initial_proxy_rows}")
-        
-        # 삭제 작업 복원인 경우
-        if action_type == UndoManager.ACTION_DELETE or action_type == 'batch_delete':
+        # 배치 작업 처리
+        if is_batch_operation:
+            print(f"[Restore Debug] 배치 작업 복원 처리 시작 ({action_type})")
+            
             try:
+                # 배치 작업 여부 확인
+                is_batch_undo = action_details.get('is_batch_undo', False)
+                
+                if is_batch_undo:
+                    print("[Restore Debug] 배치 작업 취소 감지. batch_undo_completed 시그널을 통해 처리되므로 여기서는 그룹 상태만 복원합니다.")
+                    
+                    # 복원이 필요한 모든 그룹 목록
+                    restored_groups = set()
+                    
+                    # batch_undo_completed 시그널이 추가로 발생할 것이므로 여기서는 최소한의 처리만 수행
+                    items = action_details.get('items', [])
+                    if not items:
+                        print("[Restore Debug] 배치 작업 아이템 없음")
+                        # 필터 복원 후 반환
+                        if has_filter:
+                            print("[Restore Debug] 필터 복원")
+                            self.duplicate_table_proxy_model.setFilterRegExp(saved_filter)
+                        return
+                        
+                    # 그룹 데이터 복원을 위한 정보 수집
+                    for item in items:
+                        group_id = item.get('group_id')
+                        snapshot_rep = item.get('snapshot_rep')
+                        snapshot_members = item.get('snapshot_members', [])
+                        
+                        if group_id and snapshot_rep and snapshot_members:
+                            # 그룹 데이터 복원
+                            print(f"[Restore Debug] 그룹 {group_id} 데이터 복원: 대표 {os.path.basename(snapshot_rep)}, 멤버 {len(snapshot_members)}개")
+                            self.group_representatives[group_id] = snapshot_rep
+                            self.duplicate_groups_data[group_id] = snapshot_members
+                            restored_groups.add(group_id)
+                    
+                    # 모든 그룹 데이터 복원 확인
+                    print(f"[Restore Debug] 총 {len(restored_groups)}개 그룹 데이터 복원 완료")
+                    
+                    # 필터 복원
+                    if has_filter:
+                        print("[Restore Debug] 필터 복원")
+                        self.duplicate_table_proxy_model.setFilterRegExp(saved_filter)
+                    
+                    return
+                
+                # 전체 배치 작업 처리 (이전 방식 - 필요시에만 사용)
+                print("[Restore Debug] 전체 배치 작업 처리 시작")
+                items = action_details.get('items', [])
+                
+                if items:
+                    # 각 항목에 대해 그룹 데이터 복원
+                    for item in items:
+                        group_id = item.get('group_id')
+                        snapshot_rep = item.get('snapshot_rep')
+                        snapshot_members = item.get('snapshot_members', [])
+                        
+                        if group_id and snapshot_rep and snapshot_members:
+                            # 그룹 데이터 복원
+                            print(f"[Restore Debug] 그룹 {group_id} 데이터 복원: 대표 {os.path.basename(snapshot_rep)}, 멤버 {len(snapshot_members)}개")
+                            self.group_representatives[group_id] = snapshot_rep
+                            self.duplicate_groups_data[group_id] = snapshot_members
+                    
+                    # 테이블 모델 차단
+                    self.duplicate_table_model.blockSignals(True)
+                    
+                    # 복원된 그룹들에 대해 테이블 업데이트
+                    restored_groups = set([item.get('group_id') for item in items if item.get('group_id')])
+                    
+                    for group_id in restored_groups:
+                        # 테이블에 그룹 데이터 추가
+                        self._update_table_for_group(group_id)
+                    
+                    # 테이블 모델 시그널 복원
+                    self.duplicate_table_model.blockSignals(False)
+                    
+                    # 테이블 뷰 갱신
+                    self.duplicate_table_view.reset()
+                    self.duplicate_table_proxy_model.invalidate()
+                    QApplication.processEvents()
+                    
+                    # 새로 추가된 행 중 하나를 선택
+                    if self.duplicate_table_model.rowCount() > 0:
+                        self.duplicate_table_view.selectRow(0)
+                        self.on_table_item_clicked(self.duplicate_table_proxy_model.index(0, 0))
+                        
+                    # 테이블 갱신 후 완료 처리
+                    print("[Restore Debug] 배치 삭제 복원 처리 완료")
+                    
+                    # 필터 복원
+                    if has_filter:
+                        print("[Restore Debug] 필터 복원")
+                        self.duplicate_table_proxy_model.setFilterRegExp(saved_filter)
+                        
+                    return
+            except Exception as e:
+                import traceback
+                print(f"[Restore Error] 배치 작업 처리 중 오류: {e}")
+                traceback.print_exc()
+            finally:
+                # 필터 복원 (에러 시에도)
+                if has_filter:
+                    print("[Restore Debug] 필터 복원 (에러 복구)")
+                    self.duplicate_table_proxy_model.setFilterRegExp(saved_filter)
+                
+                return
+                    
+        # 단일 항목 작업 처리 (삭제/이동)
+        if action_type == UndoManager.ACTION_DELETE:
+            # ------  개별 삭제 복원 처리 코드 ------
+            try:
+                # 복원된 경로 확인 (batch_delete의 경우 items 배열의 첫 번째 항목 사용)
+                deleted_path = None
+                if action_type == UndoManager.ACTION_DELETE:
+                    deleted_path = action_details.get('deleted_path')
+                elif action_type == 'batch_delete' and 'items' in action_details:
+                    first_item = action_details.get('items', [])[0] if action_details.get('items', []) else None
+                    if first_item:
+                        deleted_path = first_item.get('deleted_path')
+                
+                print(f"[Restore Debug] 복원 대상 파일: {deleted_path}")
+                
+                # 일괄 삭제 복원인 경우 last_deleted_items 활용
+                if action_type == 'batch_delete' and self.last_deleted_items:
+                    print(f"[Restore Debug] 배치 삭제 복원 - 저장된 정보 사용: {len(self.last_deleted_items)}개 항목")
+                    
+                    # 직접 테이블 모델에 행 추가
+                    for item_info in self.last_deleted_items:
+                        try:
+                            path = item_info.get('path')
+                            item_group_id = item_info.get('group_id')
+                            representative = item_info.get('representative')
+                            similarity = item_info.get('similarity', 0)
+                            rank = item_info.get('rank', 0)
+                            
+                            if not path or not os.path.exists(path) or not item_group_id:
+                                print(f"[Restore Debug] 항목 정보 불완전: {path}")
+                                continue
+                            
+                            print(f"[Restore Debug] 행 직접 추가: {os.path.basename(path)}, 그룹 {item_group_id}")
+                            
+                            # 체크박스 아이템 생성
+                            item_checkbox = QStandardItem()
+                            item_checkbox.setCheckable(True)
+                            item_checkbox.setCheckState(Qt.Unchecked)
+                            
+                            # 'Rank' 열 아이템 생성
+                            item_rank = QStandardItem(str(rank))
+                            item_rank.setTextAlignment(Qt.AlignCenter)
+                            item_rank.setData(rank, Qt.UserRole + 6)
+                            item_rank.setFlags(item_rank.flags() & ~Qt.ItemIsEditable)
+                            
+                            # 대표 이미지 아이템
+                            item_representative = QStandardItem(representative)
+                            item_representative.setFlags(item_representative.flags() & ~Qt.ItemIsEditable)
+                            
+                            # 멤버 이미지 아이템
+                            item_member = QStandardItem(path)
+                            item_member.setFlags(item_member.flags() & ~Qt.ItemIsEditable)
+                            
+                            # 유사도 아이템
+                            similarity_text = f"{similarity}%"
+                            item_similarity = QStandardItem(similarity_text)
+                            item_similarity.setData(similarity, Qt.UserRole + 4)
+                            item_similarity.setTextAlignment(Qt.AlignCenter)
+                            item_similarity.setFlags(item_similarity.flags() & ~Qt.ItemIsEditable)
+                            
+                            # 그룹 ID 아이템
+                            item_group_id = QStandardItem(item_group_id)
+                            item_group_id.setFlags(item_group_id.flags() & ~Qt.ItemIsEditable)
+                            
+                            # 행 아이템 생성
+                            row_items = [item_checkbox, item_rank, item_representative, item_member, item_similarity, item_group_id]
+                            
+                            # 테이블에 행 추가
+                            self.duplicate_table_model.appendRow(row_items)
+                            
+                        except Exception as e:
+                            print(f"[Restore Error] 행 추가 중 오류: {e}")
+                    
+                    # 마지막으로 삭제된 항목 정보 초기화
+                    self.last_deleted_items = []
+                    
+                    # 테이블 갱신
+                    self.duplicate_table_view.reset()
+                    self.duplicate_table_proxy_model.invalidate()
+                    QApplication.processEvents()
+                    
+                    # 새로 추가된 행 중 하나를 선택
+                    if self.duplicate_table_model.rowCount() > 0:
+                        self.duplicate_table_view.selectRow(0)
+                        self.on_table_item_clicked(self.duplicate_table_proxy_model.index(0, 0))
+                        
+                    # 테이블 갱신 후 완료 처리
+                    print("[Restore Debug] 배치 삭제 복원 처리 완료")
+                    
+                    # 필터 복원
+                    if has_filter:
+                        print("[Restore Debug] 필터 복원")
+                        self.duplicate_table_proxy_model.setFilterRegExp(saved_filter)
+                        
+                    return
+
                 # 복원 스냅샷 정보 가져오기 
                 restore_snapshot_rep = action_details.get('snapshot_rep')
                 restore_snapshot_members = action_details.get('snapshot_members', [])
@@ -707,6 +953,10 @@ class MainWindow(QMainWindow):
                 print(f"[Restore] 복원 후 테이블 상태: 소스 행 수={source_rows}, 프록시 행 수={proxy_rows}")
                 print(f"[Restore] 행 수 변화: 소스={source_rows-initial_source_rows}, 프록시={proxy_rows-initial_proxy_rows}")
                 
+                # 순환형 프록시 모델 무효화 및 갱신 강제
+                self.duplicate_table_proxy_model.invalidate()
+                QApplication.processEvents()
+                
                 # 복원된 행 찾기
                 print(f"[Restore Debug] 복원할 행 찾는 중 - 대표: {os.path.basename(restore_snapshot_rep)}, 멤버: {os.path.basename(restore_snapshot_members[0][0]) if restore_snapshot_members else 'None'}")
                 next_row_to_select = None
@@ -729,11 +979,35 @@ class MainWindow(QMainWindow):
                         else:
                             print(f"[Restore Debug] 경고: 소스 인덱스 {row}에 해당하는 프록시 인덱스가 유효하지 않습니다!")
                 
+                # 행을 선택하지 못한 경우, 프록시 모델을 완전히 재설정하고 다시 시도
+                if next_row_to_select is None:
+                    print("[Restore Debug] 첫 번째 시도에서 행을 찾지 못함. 프록시 모델 강제 재설정 후 다시 시도")
+                    
+                    # 모델 강제 재설정
+                    self.duplicate_table_proxy_model.setSourceModel(None)
+                    QApplication.processEvents()
+                    self.duplicate_table_proxy_model.setSourceModel(self.duplicate_table_model)
+                    QApplication.processEvents()
+                    
+                    # 다시 시도
+                    for row in range(self.duplicate_table_model.rowCount()):
+                        group_id_item = self.duplicate_table_model.item(row, 5)
+                        if group_id_item and group_id_item.text() == group_id:
+                            proxy_index = self.duplicate_table_proxy_model.mapFromSource(
+                                self.duplicate_table_model.index(row, 0)
+                            )
+                            if proxy_index.isValid():
+                                next_row_to_select = proxy_index.row()
+                                print(f"[Restore Debug] 두 번째 시도에서 행 찾음 - 프록시 인덱스: {next_row_to_select}")
+                                break
+                
                 # 복원된 행을 선택하거나 기본 선택 실행
                 if next_row_to_select is not None:
                     print(f"[Restore Debug] 찾은 행 선택: {next_row_to_select}")
                     self.duplicate_table_view.selectRow(next_row_to_select)
                     # 선택된 행이 보이도록 스크롤
+                    # QAbstractItemView 임포트가 누락되었을 수 있어 수정
+                    from PyQt5.QtWidgets import QAbstractItemView
                     self.duplicate_table_view.scrollTo(
                         self.duplicate_table_proxy_model.index(next_row_to_select, 0),
                         QAbstractItemView.PositionAtCenter
@@ -743,7 +1017,14 @@ class MainWindow(QMainWindow):
                     self.on_table_item_clicked(self.duplicate_table_proxy_model.index(next_row_to_select, 0))
                 else:
                     print("[Restore] 복원된 행을 찾을 수 없어 UI 업데이트를 호출합니다.")
-                    # UI 업데이트 호출 전 한 번 더 테이블 갱신
+                    # 전체 테이블 모델을 다시 그리기 (모든 행이 누락된 경우에 대처)
+                    self.duplicate_table_model.blockSignals(True)
+                    
+                    # 그룹 내 모든 데이터에 대해 테이블 다시 채우기
+                    for group_id in self.group_representatives.keys():
+                        self._update_table_for_group(group_id)
+                    
+                    self.duplicate_table_model.blockSignals(False)
                     self.duplicate_table_view.reset()
                     self.duplicate_table_proxy_model.invalidate()
                     QApplication.processEvents()
@@ -812,7 +1093,52 @@ class MainWindow(QMainWindow):
         except Exception as e:
             print(f"Could not open feedback URL: {e}")
             QMessageBox.warning(self, "Error", f"Could not open the feedback page:\n{e}")
-    # --- 메서드 추가 끝 ---
+            
+    def _handle_batch_undo_completed(self, restored_paths):
+        """
+        배치 작업 취소가 완료되었을 때 테이블 UI를 복원합니다.
+        
+        Args:
+            restored_paths: 복원된 파일 경로 목록
+        """
+        print(f"[Batch Undo] 배치 작업 취소 완료 시그널 수신, 복원된 경로 수: {len(restored_paths)}")
+        
+        if not restored_paths or len(restored_paths) == 0:
+            print("[Batch Undo] 복원된 파일이 없음")
+            return
+            
+        print(f"[Batch Undo] 복원된 파일 경로: {', '.join([os.path.basename(p) for p in restored_paths])}")
+        print(f"[Batch Undo] last_deleted_items 항목 수: {len(self.last_deleted_items)}")
+            
+        # 모든 그룹 정보 수집
+        all_groups = set()
+        for group_id in self.group_representatives.keys():
+            all_groups.add(group_id)
+            
+        print(f"[Batch Undo] 현재 모든 그룹: {all_groups}")
+        
+        # 테이블 모델 시그널 차단
+        self.duplicate_table_model.blockSignals(True)
+        
+        # 각 그룹별로 테이블 업데이트
+        for group_id in all_groups:
+            if group_id in self.group_representatives and group_id in self.duplicate_groups_data:
+                self._update_table_for_group(group_id)
+                print(f"[Batch Undo] 그룹 {group_id} 테이블 업데이트 완료")
+        
+        # 테이블 모델 시그널 차단 해제
+        self.duplicate_table_model.blockSignals(False)
+        
+        # 테이블 뷰 갱신
+        self.duplicate_table_view.reset()
+        self.duplicate_table_proxy_model.invalidate()
+        
+        # UI 업데이트
+        self._update_ui_after_action()
+        
+        # 상태 메시지 표시
+        self.status_label.setText(f"{len(restored_paths)}개 항목 복원 완료")
+        print(f"[Batch Undo] UI 복원 완료, {len(restored_paths)}개 항목 복원됨")
 
     # --- 파일 및 폴더 열기 메서드 추가 ---
     def open_selected_file(self, target: str):
@@ -1070,9 +1396,15 @@ class MainWindow(QMainWindow):
         selected_count = len(self.selected_items)
         print(f"[Batch Delete] 전체 항목 수: {total_items_before}, 선택된 항목 수: {selected_count}")
         
+        # 삭제한 항목들의 정보를 저장할 목록 초기화
+        self.last_deleted_items = []
+        
         # 삭제할 항목들의 행 인덱스 수집 (나중에 UI 갱신에 사용)
         rows_to_remove = []
         selected_paths_copy = self.selected_items.copy()  # 복사본 사용
+        
+        # 선택된 항목들을 그룹별로 분류
+        group_items_map = {}  # 그룹 ID별 항목 목록 {group_id: [path1, path2, ...]}
         
         # 선택된 항목들에 대한 정보 수집
         items_info = []
@@ -1087,11 +1419,37 @@ class MainWindow(QMainWindow):
                 if member_item and member_item.text() == member_path:
                     rep_item = self.duplicate_table_model.item(row, 2)
                     group_id_item = self.duplicate_table_model.item(row, 5)
+                    sim_item = self.duplicate_table_model.item(row, 4)
+                    rank_item = self.duplicate_table_model.item(row, 1)
                     
                     if rep_item and group_id_item:
                         representative_path = rep_item.text()
                         group_id = group_id_item.text()
                         rows_to_remove.append(row)  # 삭제할 행 인덱스 저장
+                        
+                        # 그룹별로 항목 분류
+                        if group_id not in group_items_map:
+                            group_items_map[group_id] = []
+                        group_items_map[group_id].append(member_path)
+                        
+                        # 삭제한 행의 정보를 저장 (복원에 사용)
+                        try:
+                            similarity = int(sim_item.text().strip('%')) if sim_item else 0
+                            rank = int(rank_item.text()) if rank_item else 0
+                            
+                            # 나중에 복원할 수 있도록 행 정보 저장
+                            self.last_deleted_items.append({
+                                'path': member_path,
+                                'group_id': group_id,
+                                'representative': representative_path,
+                                'similarity': similarity,
+                                'rank': rank
+                            })
+                            
+                            print(f"[Batch Delete] 행 삭제 정보 저장: 그룹 {group_id}, 경로 {os.path.basename(member_path)}")
+                        except Exception as e:
+                            print(f"[Batch Delete] 행 정보 저장 중 오류: {e}")
+                        
                         break
             
             if group_id and representative_path:
@@ -1108,26 +1466,40 @@ class MainWindow(QMainWindow):
             else:
                 print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
         
+        print(f"[Batch Delete] 총 {len(group_items_map)}개 그룹에서 항목 삭제 예정")
+        for group_id, paths in group_items_map.items():
+            print(f"[Batch Delete] 그룹 {group_id}: {len(paths)}개 항목 삭제 예정")
+        
         # 배치 삭제 작업 수행 (UndoManager의 batch_delete_files 메서드 사용)
         success, deleted_files = self.undo_manager.batch_delete_files(items_info)
         
         if success and deleted_files:
-            # 삭제된 파일들에 대한 그룹 데이터 업데이트
-            for action in items_info:
-                if action['deleted_path'] in deleted_files:
-                    self._update_groups_after_deletion(
-                        action['deleted_path'], 
-                        action['group_id'], 
-                        action['representative_path']
-                    )
+            # 삭제된 파일들에 대한 그룹 데이터 업데이트 (그룹별로 처리)
+            for group_id, paths in group_items_map.items():
+                for path in paths:
+                    if path in deleted_files:
+                        # 해당 그룹의 대표 경로 찾기
+                        rep_path = self.group_representatives.get(group_id, "")
+                        self._update_groups_after_deletion(
+                            path, 
+                            group_id, 
+                            rep_path
+                        )
+                
+                # 각 그룹별로 테이블 업데이트
+                if group_id in self.duplicate_groups_data and self.group_representatives.get(group_id):
+                    print(f"[Batch Delete] 그룹 {group_id}의 테이블 데이터 업데이트")
+                    self._update_table_for_group(group_id)
             
             # 테이블에서 선택된 행들을 직접 제거 (UI 즉시 갱신)
             print(f"[Batch Delete] 테이블에서 {len(rows_to_remove)}개 행을 직접 제거합니다.")
+            self.duplicate_table_model.blockSignals(True)
             for row in sorted(rows_to_remove, reverse=True):
                 try:
                     self.duplicate_table_model.removeRow(row)
                 except Exception as e:
                     print(f"[Batch Delete] 행 제거 중 오류: {e}")
+            self.duplicate_table_model.blockSignals(False)
             
             # 테이블 뷰 강제 갱신
             self.duplicate_table_view.reset()
@@ -1154,9 +1526,15 @@ class MainWindow(QMainWindow):
                 self.right_image_label.clear()
                 self.right_info_label.setText("Image Area")
             
+            # 삭제된 항목 정보 저장 (UndoManager에서 사용)
+            print(f"[Batch Delete] 총 {len(self.last_deleted_items)}개 항목 정보 저장 완료")
+            
             # UI 업데이트 (제거된 항목이 있는 경우에만)
             if len(rows_to_remove) > 0:
                 print("[Batch Delete] UI 상태 업데이트를 실행합니다.")
+                # 프록시 모델 강제 갱신
+                self.duplicate_table_proxy_model.invalidate()
+                QApplication.processEvents()
                 self._update_ui_after_action()
             
             # 선택 목록 초기화
@@ -1227,6 +1605,9 @@ class MainWindow(QMainWindow):
         rows_to_remove = []
         selected_paths_copy = self.selected_items.copy()  # 복사본 사용
         
+        # 선택된 항목들을 그룹별로 분류
+        group_items_map = {}  # 그룹 ID별 항목 목록 {group_id: [path1, path2, ...]}
+        
         # 선택된 항목들에 대한 정보 수집
         items_info = []
         for member_path in selected_paths_copy:
@@ -1245,6 +1626,12 @@ class MainWindow(QMainWindow):
                         representative_path = rep_item.text()
                         group_id = group_id_item.text()
                         rows_to_remove.append(row)  # 이동할 행 인덱스 저장
+                        
+                        # 그룹별로 항목 분류
+                        if group_id not in group_items_map:
+                            group_items_map[group_id] = []
+                        group_items_map[group_id].append(member_path)
+                        
                         break
             
             if group_id and representative_path:
@@ -1262,29 +1649,45 @@ class MainWindow(QMainWindow):
             else:
                 print(f"경고: {member_path} 파일의 그룹 정보를 찾을 수 없습니다.")
         
+        print(f"[Batch Move] 총 {len(group_items_map)}개 그룹에서 항목 이동 예정")
+        for group_id, paths in group_items_map.items():
+            print(f"[Batch Move] 그룹 {group_id}: {len(paths)}개 항목 이동 예정")
+        
         # 배치 이동 작업 수행 (UndoManager의 batch_move_files 메서드 사용)
         success, moved_files = self.undo_manager.batch_move_files(items_info)
         
         if success and moved_files:
-            # 이동된 파일들에 대한 그룹 데이터 업데이트
+            # 이동된 파일들에 대한 그룹 데이터 업데이트 (그룹별로 처리)
+            processed_groups = set()  # 업데이트된 그룹 추적
+            
             for source_path, destination_path in moved_files:
                 # 해당 원본 파일의 그룹 정보 찾기
                 for action in items_info:
                     if action['moved_from'] == source_path:
+                        group_id = action['group_id']
                         self._update_groups_after_move(
                             source_path, 
                             destination_path, 
-                            action['group_id']
+                            group_id
                         )
+                        processed_groups.add(group_id)
                         break
+            
+            # 각 그룹별로 테이블 업데이트
+            for group_id in processed_groups:
+                if group_id in self.duplicate_groups_data and self.group_representatives.get(group_id):
+                    print(f"[Batch Move] 그룹 {group_id}의 테이블 데이터 업데이트")
+                    self._update_table_for_group(group_id)
             
             # 테이블에서 선택된 행들을 직접 제거 (UI 즉시 갱신)
             print(f"[Batch Move] 테이블에서 {len(rows_to_remove)}개 행을 직접 제거합니다.")
+            self.duplicate_table_model.blockSignals(True)
             for row in sorted(rows_to_remove, reverse=True):
                 try:
                     self.duplicate_table_model.removeRow(row)
                 except Exception as e:
                     print(f"[Batch Move] 행 제거 중 오류: {e}")
+            self.duplicate_table_model.blockSignals(False)
             
             # 테이블 뷰 강제 갱신
             self.duplicate_table_view.reset()
@@ -1308,6 +1711,9 @@ class MainWindow(QMainWindow):
             # UI 업데이트 (제거된 항목이 있는 경우에만)
             if len(rows_to_remove) > 0:
                 print("[Batch Move] UI 상태 업데이트를 실행합니다.")
+                # 프록시 모델 강제 갱신
+                self.duplicate_table_proxy_model.invalidate()
+                QApplication.processEvents()
                 self._update_ui_after_action()
             
             # 선택 목록 초기화
