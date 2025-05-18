@@ -1014,6 +1014,11 @@ class MainWindow(QMainWindow):
         
         # 일괄 작업 버튼 활성화/비활성화
         self._update_batch_buttons_state()
+        
+        # 테이블 뷰 강제 갱신
+        self.duplicate_table_view.update()
+        self.duplicate_table_view.repaint()
+        QApplication.processEvents()  # UI 이벤트 즉시 처리
     
     def clear_selection(self):
         """선택된 모든 항목 선택 해제"""
@@ -1036,6 +1041,11 @@ class MainWindow(QMainWindow):
         
         # 일괄 작업 버튼 활성화/비활성화
         self._update_batch_buttons_state()
+        
+        # 테이블 뷰 강제 갱신
+        self.duplicate_table_view.update()
+        self.duplicate_table_view.repaint()
+        QApplication.processEvents()  # UI 이벤트 즉시 처리
     
     def delete_selected_items(self):
         """선택된 모든 항목 삭제"""
